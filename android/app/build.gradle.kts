@@ -164,7 +164,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.lladlam.melox.android"
+        applicationId = "com.holden.melox.personal"
         minSdk = 24
         targetSdk = 37
         versionCode = 29
@@ -247,15 +247,8 @@ android {
 
     buildTypes {
         getByName("debug") {
-            // 本地调试包必须能与「官方 MeloX 安卓版」同时安装。
-            // 官方占 com.lladlam.melox.android（release key 签名），本工作区的
-            // debug key 包因此落到 com.lladlam.melox.android.dev。
-            // ⚠ 不要删这个后缀：同名不同签名会直接
-            //   INSTALL_FAILED_UPDATE_INCOMPATIBLE，两个包只能留一个。
-            // Manifest 的 authorities 全是 ${applicationId}.xxx 模板（.androidx-startup
-            // / .fileprovider / .shizuku），换 id 自动错开，无需额外改动。
-            // Override for same-phone LAN regression with a second debug install.
-            applicationIdSuffix = providers.gradleProperty("meloxDebugApplicationIdSuffix").getOrElse(".dev")
+            // Add a suffix when testing two personal builds side by side.
+            applicationIdSuffix = providers.gradleProperty("meloxDebugApplicationIdSuffix").orNull
         }
 
         // ── debugPerf：不卡的 debug ──────────────────────────────────────────
@@ -273,7 +266,6 @@ android {
         // ⚠ AGP sourceSet 不随 initWith 继承，目录名就是 buildType 名。
         create("debugPerf") {
             initWith(getByName("debug"))
-            applicationIdSuffix = ".dev"
             // ── 解除横竖屏限制（2026-10-08 用户要求，仅此一版）────────────────
             // 对齐 MeloX 原版：不锁竖屏，方向完全交给系统 / 传感器。
             // 生效的两处：① src/debugPerf/AndroidManifest.xml 把 MainActivity 的
@@ -296,13 +288,7 @@ android {
         getByName("release") {
             meloxReleaseSigning?.let { signingConfig = it }
 
-            // ── Package id ──────────────────────────────────────────────────
-            // Published releases MUST keep com.lladlam.melox.android: previous
-            // MeloX Android releases (0.6.5 and earlier) use that id and the same
-            // MeloX signing certificate, so a suffix would install a second app
-            // and existing users would never receive the update.
-            // For a side-by-side test build pass
-            // -PmeloxReleaseIdSuffix=.fork explicitly.
+            // Optional suffix for testing a separate release install.
             val releaseIdSuffix = providers.gradleProperty("meloxReleaseIdSuffix").orNull.orEmpty()
             if (releaseIdSuffix.isNotBlank()) {
                 applicationIdSuffix = releaseIdSuffix

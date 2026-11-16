@@ -6,7 +6,7 @@ import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 
-internal const val MeloXPackage = "com.lladlam.melox.android"
+internal const val MeloXPackage = "com.holden.melox.personal"
 
 internal fun MacrobenchmarkScope.startMeloX(): UiDevice {
     pressHome()

@@ -20,6 +20,7 @@
     <string name="settings_general_language_system">Follow system</string>
     <string name="settings_general_language_legacy">Follows the system language on this Android version. Tap to open system language settings.</string>
     <string name="app_name">弥乐</string>
+    <string name="fork_app_name" translatable="false">弥乐 · Holden</string>
     <string name="tab_home">Home</string>
     <string name="tab_explore">Explore</string>
     <string name="tab_library">Library</string>
