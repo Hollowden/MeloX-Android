@@ -357,6 +357,16 @@ fun SearchScreen(
     }
     var searchingLx by remember { mutableStateOf(false) }
     var matchingLxTrack by remember { mutableStateOf(false) }
+    val lxFilter = "lx"
+    val hasLxScripts = remember(appContext, lxSourceRevision) {
+        LxUserSourceStore.list(appContext).isNotEmpty()
+    }
+    val includesLxResults = hasLxScripts && ThirdPartyMusicSourceConsentStore.enabled(appContext)
+    var resultSource by rememberSaveable(
+        source.name, unifiedEnabled, includesLxResults, unifiedSources.map { it.value }.sorted().joinToString(),
+    ) {
+        mutableStateOf<String?>(null)
+    }
     var providerSearchPage by rememberRetainedPageState(source, kind, query, unifiedSources, selectedPlugin) { mutableStateOf(1) }
     var providerSearchHasMore by rememberRetainedPageState(source, kind, query) { mutableStateOf(false) }
     var media by rememberRetainedPageState(source) { mutableStateOf<List<MeloXSearchMediaItem>>(emptyList()) }
@@ -384,7 +394,11 @@ fun SearchScreen(
     var loadedSearch by rememberRetainedPageState(source) { mutableStateOf<List<Any?>?>(null) }
 
     val visibleSongs = songs
-    val visibleProviderSongs = providerSongs
+    val visibleProviderSongs = if (!useUnifiedSongSearch || resultSource == null) {
+        providerSongs
+    } else {
+        providerSongs.filter { it.id.sourceId.value == resultSource }
+    }
 
     // 顶部折叠头驱动 —— 复刻 [ExploreCollapsingHeader] 的精确逻辑：折叠进度直接由
     // 子列表自身的 firstVisibleItemScrollOffset 驱动（与发现页同款），不依赖嵌套滚动
@@ -803,6 +817,38 @@ fun SearchScreen(
         }
         if (query.isNotBlank() && selectedPlugin == null) {
             SearchScopes(kind = kind, availableKinds = availableKinds, onKind = { kind = it })
+            if (kind == MeloXSearchKind.Songs && linkedId == null) {
+                if (useUnifiedSongSearch) {
+                    val sourceOptions = buildList<Pair<String?, String>> {
+                        add(null to stringResource(R.string.search_source_all))
+                        unifiedSources.sortedBy { it != currentProvider.sourceId }.forEach { id ->
+                            add(id.value to (providerRegistry[id]?.displayName ?: id.displayName))
+                        }
+                        if (includesLxResults) {
+                            add(lxFilter to stringResource(R.string.search_source_lx))
+                        }
+                    }
+                    SearchResultSourceTabs(sourceOptions, resultSource) { resultSource = it }
+                } else {
+                    TextButton(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        onClick = {
+                            val previouslySelected = MusicProviderSelectionStore.unifiedSources(appContext)
+                            if (previouslySelected.size < 2) {
+                                MusicProviderSelectionStore.setUnifiedSources(
+                                    appContext,
+                                    previouslySelected + setOf(source, MusicSource.QQMusic, MusicSource.Kuwo, MusicSource.KugouLite),
+                                )
+                            }
+                            resultSource = null
+                            skipSearchDebounce = true
+                            MusicProviderSelectionStore.setUnifiedEnabled(appContext, true)
+                        },
+                    ) {
+                        Text(stringResource(R.string.search_enable_multiple_sources))
+                    }
+                }
+            }
         }
 
         Box(Modifier.weight(1f)) {
@@ -857,10 +903,10 @@ fun SearchScreen(
                     Box(Modifier.weight(1f)) { ProviderSearchSongResults(
                     state = listState,
                     values = visibleProviderSongs,
-                    failures = unifiedFailures,
+                    failures = unifiedFailures.filter { resultSource == null || it.sourceId.value == resultSource },
                     showSource = true,
-                    lxResults = lxSearchResult,
-                    searchingLx = searchingLx,
+                    lxResults = if (resultSource == null || resultSource == lxFilter) lxSearchResult else LxSongSearchResult(),
+                    searchingLx = searchingLx && (resultSource == null || resultSource == lxFilter),
                     onLxHit = { hit ->
                         if (!matchingLxTrack) {
                             matchingLxTrack = true
@@ -1213,6 +1259,26 @@ private fun SearchField(
 }
 
 @Composable
+private fun SearchResultSourceTabs(
+    options: List<Pair<String?, String>>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(options, key = { it.first ?: "all" }) { (id, name) ->
+            androidx.compose.material3.FilterChip(
+                selected = selected == id,
+                onClick = { onSelect(id) },
+                label = { Text(name) },
+            )
+        }
+    }
+}
+
+@Composable
 private fun SearchScopes(
     kind: MeloXSearchKind,
     availableKinds: List<MeloXSearchKind>,
@@ -1432,7 +1498,7 @@ internal fun ProviderSearchSongResults(
                 )
             }
         }
-        if (values.isEmpty() && lxResults.hits.isEmpty()) {
+        if (values.isEmpty() && lxResults.hits.isEmpty() && !searchingLx) {
             item { SearchEmptyInline(stringResource(R.string.search_no_songs)) }
         }
         items(lxResults.hits, key = { it.key }) { hit ->

@@ -779,6 +779,9 @@
     <string name="search_trending">Trending</string>
     <string name="search_browse">Browse</string>
     <string name="search_source_hint">Search %1$s songs, playlists, albums, or artists</string>
+    <string name="search_source_all">All sources</string>
+    <string name="search_source_lx">LX sources</string>
+    <string name="search_enable_multiple_sources">Search more sources</string>
     <string name="search_lx_loading">Searching LX sources…</string>
     <string name="search_lx_failed">LX search failed: %1$s</string>
     <string name="search_lx_no_playback_match">No matching song in the selected catalogs</string>
