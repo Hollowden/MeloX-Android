@@ -773,6 +773,9 @@
     <string name="search_trending">热门推荐</string>
     <string name="search_browse">浏览类别</string>
     <string name="search_source_hint">搜索 %1$s 的歌曲、歌单、专辑或歌手</string>
+    <string name="search_lx_loading">正在搜索洛雪音源…</string>
+    <string name="search_lx_failed">洛雪音源搜索失败：%1$s</string>
+    <string name="search_lx_no_playback_match">在已选择的曲库里找不到同一首歌</string>
     <string name="search_no_songs">没有找到歌曲</string>
     <string name="search_download_local">下载到本机</string>
     <string name="search_no_results">没有找到内容</string>

@@ -34,12 +34,40 @@ class LxRuntimeDeviceRunner : Instrumentation() {
         val result = Bundle()
         try {
             runRegression()
+            runSearchRegression()
             runRestrictedHttpRegression()
             result.putString("result", "QuickJS, isolated HTTP and media range regression passed")
             finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("error", error.stackTraceToString())
             finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    private fun runSearchRegression() {
+        val script = """
+            globalThis.lx.on(globalThis.lx.EVENT_NAMES.request, ({action, source, info}) => {
+              if (action !== 'search' || source !== 'kw' ||
+                  info.text !== '红尘客栈' || info.page !== 2 || info.limit !== 25) {
+                throw Error('unexpected search request')
+              }
+              return Promise.resolve({isEnd:true, list:[{name:info.text,singer:'周杰伦'}]})
+            });
+            globalThis.lx.send(globalThis.lx.EVENT_NAMES.inited, {
+              sources: {kw:{type:'music',actions:['search','musicUrl'],qualitys:['128k']}}
+            });
+        """.trimIndent()
+        val runtime = LxUserRuntime()
+        try {
+            runtime.load(LxUserScript(script))
+            check(runtime.declaredSearchSources() == listOf("kw"))
+            val raw = runtime.callAction("search", mapOf(
+                "source" to "kw", "text" to "红尘客栈", "page" to 2, "limit" to 25,
+            )) as String
+            val hit = org.json.JSONObject(raw).getJSONArray("list").getJSONObject(0)
+            check(hit.getString("name") == "红尘客栈" && hit.getString("singer") == "周杰伦")
+        } finally {
+            runtime.close()
         }
     }
 

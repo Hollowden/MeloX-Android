@@ -139,7 +139,7 @@ class LxUserRuntime(
         return info
     }
 
-    /** Invokes a V5 action (musicUrl, lyric, or pic) and returns its raw result. */
+    /** Invokes a supported action and returns its result. */
     fun callAction(action: String, args: Map<String, Any?>): Any? = try {
         runtimeThread.call { callActionOnRuntimeThread(action, args) }
     } catch (error: TimeoutException) {
@@ -153,11 +153,11 @@ class LxUserRuntime(
     }
 
     private fun callActionOnRuntimeThread(action: String, args: Map<String, Any?>): Any? {
-        require(action == "musicUrl" || action == "lyric" || action == "pic") {
+        require(action in SUPPORT_LX_ACTIONS) {
             "Unsupported LX action: $action"
         }
         val source = args["source"]?.toString() ?: "kw"
-        val info = mapOf(
+        val info = if (action == "search") args - "source" else mapOf(
             "type" to (args["type"] ?: "128k"),
             "musicInfo" to (args["musicInfo"] ?: args),
         )
@@ -175,6 +175,7 @@ class LxUserRuntime(
         val returned = if (handler != null) {
             handler.call(requestArg)
         } else {
+            check(action != "search") { "LX search handler is not registered" }
             val global = context.globalObject
             val globalFunction = global.getJSFunctionProperty("musicUrl")
             val module = global.getJSObjectProperty("module")
@@ -199,6 +200,10 @@ class LxUserRuntime(
         drainUntil(done)
         errorRef.get()?.let { throw it }
         val resolved = resultRef.get()
+        if (action == "search") {
+            val json = requireNotNull(context.globalObject.getJSObjectProperty("JSON"))
+            return json.getJSFunctionProperty("stringify")?.call(resolved)
+        }
         if (action != "musicUrl") {
             val hostResolved = if (resolved is QuickJSObject) resolved.toMap() else resolved
             Log.d(TAG, "action done source=$source action=$action result=${responseShape(hostResolved)}")
@@ -230,6 +235,10 @@ class LxUserRuntime(
      */
     fun supportsAction(source: String, action: String): Boolean = runtimeThread.call {
         sourceActions.isEmpty() || action in sourceActions[source].orEmpty()
+    }
+
+    internal fun declaredSearchSources(): List<String> = runtimeThread.call {
+        sourceActions.filterValues { "search" in it }.keys.filterNot { it == "local" }
     }
 
     fun sentEvents(): List<Pair<String, Any?>> = recordedEvents.toList()
@@ -866,7 +875,7 @@ class LxUserRuntime(
         private val SUPPORT_LX_QUALITIES = LX_QUALITY_ORDER
         // LX only lets 'local' serve lyric/pic; MeloX keeps those actions for
         // any declared source as an intentional, documented superset.
-        private val SUPPORT_LX_ACTIONS = listOf("musicUrl", "lyric", "pic")
+        private val SUPPORT_LX_ACTIONS = listOf("musicUrl", "lyric", "pic", "search")
         private val UPDATE_URL_PATTERN = Regex("^https?://[^\\s$.?#].[^\\s]*$")
         private const val ACTION_TIMEOUT_MS = HTTP_TIMEOUT_MS + 2_000L
         private const val LX_USER_AGENT =

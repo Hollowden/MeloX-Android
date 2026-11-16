@@ -146,7 +146,15 @@ import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.ui.settings.MeloXSwipeFullAction
 import com.lladlam.melox.ui.player.MeloXSongActionsOverlay
 import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
+import com.lladlam.melox.core.music.provider.ThirdPartyMusicSourceConsentStore
+import com.lladlam.melox.core.provider.lxuser.LxSongSearchHit
+import com.lladlam.melox.core.provider.lxuser.LxSongSearchResult
+import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
+import com.lladlam.melox.core.provider.lxuser.searchInstalledLxSources
+import com.lladlam.melox.playback.isSafeLxPlaybackMatch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -298,8 +306,14 @@ fun SearchScreen(
     val providerCatalog = currentProvider as? CatalogSearchCapability
     val providerHome = currentProvider as? HomeFeedCapability
     val unifiedService = remember(providerRegistry) { UnifiedMusicService(providerRegistry) }
-    val unifiedEnabled = MusicProviderSelectionStore.unifiedEnabled(appContext)
-    val unifiedSources = MusicProviderSelectionStore.unifiedSourceIds(appContext)
+    val selectionRevision by MusicProviderSelectionStore.changes.collectAsState()
+    val unifiedEnabled = remember(appContext, selectionRevision) {
+        MusicProviderSelectionStore.unifiedEnabled(appContext)
+    }
+    val unifiedSources = remember(appContext, selectionRevision) {
+        MusicProviderSelectionStore.unifiedSourceIds(appContext)
+    }
+    val useUnifiedSongSearch = unifiedEnabled && unifiedSources.isNotEmpty()
 
     val availableKinds = remember(source, providerCatalog) {
         if (source == MusicSource.Netease) {
@@ -319,6 +333,7 @@ fun SearchScreen(
     var query by rememberSaveable(source.name) { mutableStateOf("") }
     var selectedPlugin by rememberSaveable(source.name, pluginSourceId) { mutableStateOf(pluginSourceId) }
     val pluginGeneration by providerRegistry.changes.collectAsState()
+    val lxSourceRevision by LxUserSourceStore.changes.collectAsState()
     // Capture the generation-dependent list outside LazyRow's skippable content lambda.
     // Otherwise a cold-start restore can leave its source chips at the initial empty list.
     val enabledPluginProviders = remember(providerRegistry, pluginGeneration) {
@@ -336,6 +351,12 @@ fun SearchScreen(
     var providerArtists by rememberRetainedPageState(source) { mutableStateOf<List<MusicArtistSummary>>(emptyList()) }
     var providerRecommendations by rememberRetainedPageState(source) { mutableStateOf<List<MusicPlaylistSummary>>(emptyList()) }
     var unifiedFailures by remember(source) { mutableStateOf<List<UnifiedMusicService.SearchFailure>>(emptyList()) }
+    val linkedId = if (source == MusicSource.Netease) parseSongLink(query.trim()) else null
+    var lxSearchResult by rememberRetainedPageState(source, query, kind, unifiedSources) {
+        mutableStateOf(LxSongSearchResult())
+    }
+    var searchingLx by remember { mutableStateOf(false) }
+    var matchingLxTrack by remember { mutableStateOf(false) }
     var providerSearchPage by rememberRetainedPageState(source, kind, query, unifiedSources, selectedPlugin) { mutableStateOf(1) }
     var providerSearchHasMore by rememberRetainedPageState(source, kind, query) { mutableStateOf(false) }
     var media by rememberRetainedPageState(source) { mutableStateOf<List<MeloXSearchMediaItem>>(emptyList()) }
@@ -408,13 +429,16 @@ fun SearchScreen(
         }
     }
 
-    LaunchedEffect(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration) {
-        val requestKey = listOf(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration)
+    LaunchedEffect(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration, lxSourceRevision) {
+        val requestKey = listOf(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration, lxSourceRevision)
         if (loadedSearch == requestKey) return@LaunchedEffect
         providerSearchHasMore = false
+        lxSearchResult = LxSongSearchResult()
+        searchingLx = false
         if (selectedPlugin != null) return@LaunchedEffect
         val keyword = query.trim()
         if (keyword.isBlank()) {
+            loadedSearch = null
             songs = emptyList()
             providerSongs = emptyList()
             providerPlaylists = emptyList()
@@ -431,7 +455,6 @@ fun SearchScreen(
         loading = true
         error = null
 
-        val linkedId = if (source == MusicSource.Netease) parseSongLink(keyword) else null
         if (linkedId != null) {
             providerSongs = emptyList()
             unifiedFailures = emptyList()
@@ -453,25 +476,41 @@ fun SearchScreen(
                 providerPlaylists = emptyList()
                 providerAlbums = emptyList()
                 providerArtists = emptyList()
-                if (unifiedEnabled && unifiedSources.size > 1) {
+                if (useUnifiedSongSearch) {
                     songs = emptyList()
                     runCatching {
-                        withContext(Dispatchers.IO) {
-                            unifiedService.searchSourceIds(
-                                query = keyword,
-                                sources = unifiedSources,
-                                page = providerSearchPage,
-                                pageSizePerProvider = 25,
-                            )
+                        coroutineScope {
+                            val page = providerSearchPage
+                            val lxEnabled = ThirdPartyMusicSourceConsentStore.enabled(appContext)
+                            searchingLx = lxEnabled
+                            val lx = async {
+                                if (lxEnabled) {
+                                    searchInstalledLxSources(appContext, keyword, page, 25)
+                                } else {
+                                    LxSongSearchResult()
+                                }
+                            }
+                            val catalogs = withContext(Dispatchers.IO) {
+                                unifiedService.searchSourceIds(
+                                    query = keyword,
+                                    sources = unifiedSources,
+                                    page = page,
+                                    pageSizePerProvider = 25,
+                                )
+                            }
+                            providerSongs = catalogs.interleavedTracks(currentProvider.sourceId)
+                            unifiedFailures = catalogs.failures
+                            val catalogHasMore = catalogs.pages.values.any { it.hasMore }
+                            if (providerSongs.isNotEmpty()) loading = false
+                            lxSearchResult = lx.await()
+                            providerSearchHasMore = catalogHasMore || lxSearchResult.hasMore
+                            searchingLx = false
                         }
-                    }.onSuccess { result ->
-                        providerSongs = result.aggregated.mapNotNull { it.recommendation?.track }.ifEmpty { result.tracks }
-                        unifiedFailures = result.failures
-                        providerSearchHasMore = result.pages.values.any { it.hasMore }
                     }.onFailure { failure ->
                         if (failure is kotlinx.coroutines.CancellationException) throw failure
                         providerSongs = emptyList()
                         unifiedFailures = emptyList()
+                        searchingLx = false
                         error = failure.message ?: "搜索失败"
                     }
                 } else if (source == MusicSource.Netease) {
@@ -737,7 +776,13 @@ fun SearchScreen(
         SearchField(
             value = query,
             onValueChange = { query = it; skipSearchDebounce = false },
-            onSearch = { skipSearchDebounce = true; searchTrigger += 1 },
+            onSearch = {
+                val canRetry = error != null || unifiedFailures.isNotEmpty() || lxSearchResult.failures.isNotEmpty()
+                if (!loading && !searchingLx && (loadedSearch?.firstOrNull() != query || canRetry)) {
+                    skipSearchDebounce = true
+                    searchTrigger += 1
+                }
+            },
             source = source,
             onBack = { if (query.isNotBlank()) query = "" else onSearchExit() },
             onOpenRecognition = onOpenRecognition,
@@ -801,12 +846,8 @@ fun SearchScreen(
                 error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
                 }
-                // The render branch must use the same predicate as the fetch branch
-                // (unifiedEnabled && unifiedSources.size > 1). Otherwise enabling unified
-                // search with a single source renders an empty provider list while the
-                // legacy NetEase results were fetched successfully and discarded.
-                kind == MeloXSearchKind.Songs &&
-                    ((unifiedEnabled && unifiedSources.size > 1) || source != MusicSource.Netease) ->
+                kind == MeloXSearchKind.Songs && linkedId == null &&
+                    (useUnifiedSongSearch || source != MusicSource.Netease) ->
                     Column(Modifier.fillMaxSize()) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         TextButton(enabled = providerSearchPage > 1, onClick = { providerSearchPage-- }) { Text("上一页") }
@@ -817,7 +858,39 @@ fun SearchScreen(
                     state = listState,
                     values = visibleProviderSongs,
                     failures = unifiedFailures,
-                    showSource = unifiedEnabled,
+                    showSource = true,
+                    lxResults = lxSearchResult,
+                    searchingLx = searchingLx,
+                    onLxHit = { hit ->
+                        if (!matchingLxTrack) {
+                            matchingLxTrack = true
+                            scope.launch {
+                                try {
+                                    val matched = withContext(Dispatchers.IO) {
+                                        val catalog = unifiedSources.filterTo(linkedSetOf()) { it.builtIn != null }
+                                        val candidates = unifiedService.searchSourceIds(
+                                            query = "${hit.title} ${hit.artist}",
+                                            sources = catalog,
+                                            pageSizePerProvider = 15,
+                                        ).interleavedTracks(currentProvider.sourceId)
+                                        candidates.firstOrNull {
+                                            isSafeLxPlaybackMatch(hit.title, hit.artist, null, it)
+                                        }
+                                    }
+                                    if (matched == null) {
+                                        android.widget.Toast.makeText(
+                                            appContext, R.string.search_lx_no_playback_match,
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else {
+                                        ProviderPlaybackCommands.playQueue(context, listOf(matched), matched.id)
+                                    }
+                                } finally {
+                                    matchingLxTrack = false
+                                }
+                            }
+                        }
+                    },
                     onPlay = { track ->
                         ProviderPlaybackCommands.playQueue(
                             context = context,
@@ -1315,6 +1388,9 @@ internal fun ProviderSearchSongResults(
     values: List<MusicTrack>,
     failures: List<UnifiedMusicService.SearchFailure>,
     showSource: Boolean,
+    lxResults: LxSongSearchResult = LxSongSearchResult(),
+    searchingLx: Boolean = false,
+    onLxHit: (LxSongSearchHit) -> Unit = {},
     onPlay: (MusicTrack) -> Unit,
 ) {
     val context = LocalContext.current
@@ -1336,21 +1412,60 @@ internal fun ProviderSearchSongResults(
                 )
             }
         }
-        if (values.isEmpty()) {
-            item { SearchEmptyInline(stringResource(R.string.search_no_songs)) }
-        } else {
-            items(values, key = { "provider:${it.id.sourceId.value}:${it.id.value}" }) { track ->
-                SearchSwipeSongRow(
-                    song = MeloXLegacyUiBridge.track(track),
-                    onPlay = { onPlay(track) },
-                    onMore = { actionTrack = track },
-                    endAction = if (providers[track.id.sourceId]?.let { it is com.lladlam.melox.core.music.provider.DownloadCapability && (it.sourceId.builtIn != null || it.supports(com.lladlam.melox.core.music.provider.MusicCapability.Download)) } == true) MeloXSwipeAction(stringResource(R.string.search_download_local), MeloXSymbol.Download, Color(0xFF0EA5E9)) {
-                        providerDownloads.start(track)
-                    } else null,
-                    sourceLabel = track.id.sourceId.displayName.takeIf { showSource },
+        if (searchingLx) {
+            item {
+                Text(
+                    stringResource(R.string.search_lx_loading),
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
                 )
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
             }
+        }
+        if (lxResults.failures.isNotEmpty()) {
+            item {
+                Text(
+                    stringResource(R.string.search_lx_failed, lxResults.failures.joinToString(" · ")),
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        if (values.isEmpty() && lxResults.hits.isEmpty()) {
+            item { SearchEmptyInline(stringResource(R.string.search_no_songs)) }
+        }
+        items(lxResults.hits, key = { it.key }) { hit ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onLxHit(hit) }.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsyncImage(hit.artworkUrl, null, contentScale = ContentScale.Crop, modifier = Modifier.size(52.dp).clip(RoundedCornerShape(8.dp)))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(hit.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOf(hit.scriptName, hit.artist, hit.album).filter(String::isNotBlank).joinToString(" · "),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+        }
+        items(values, key = { "provider:${it.id.sourceId.value}:${it.id.value}" }) { track ->
+            SearchSwipeSongRow(
+                song = MeloXLegacyUiBridge.track(track),
+                onPlay = { onPlay(track) },
+                onMore = { actionTrack = track },
+                endAction = if (providers[track.id.sourceId]?.let { it is com.lladlam.melox.core.music.provider.DownloadCapability && (it.sourceId.builtIn != null || it.supports(com.lladlam.melox.core.music.provider.MusicCapability.Download)) } == true) MeloXSwipeAction(stringResource(R.string.search_download_local), MeloXSymbol.Download, Color(0xFF0EA5E9)) {
+                    providerDownloads.start(track)
+                } else null,
+                sourceLabel = (providers[track.id.sourceId]?.displayName ?: track.id.sourceId.displayName).takeIf { showSource },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
         }
     }
     actionTrack?.let { track ->
@@ -1443,6 +1558,7 @@ private fun SearchSongResults(
                 song = song,
                 onPlay = { onPlay(song) },
                 onMore = { onMore(song) },
+                sourceLabel = MusicSource.Netease.displayName,
                 endAction = MeloXSwipeAction(stringResource(R.string.artist_add_library), MeloXSymbol.Heart, Color(0xFFFF3B30)) { onLike(song) },
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
@@ -1479,9 +1595,6 @@ private fun SearchSwipeSongRow(
                 Text(song.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp, fontWeight = FontWeight.Medium)
                 Text(
                     buildList {
-                        // Source first, then the artist: aggregation picks one
-                        // source per identical song, so the choice must be
-                        // visible before the artist rather than after it.
                         sourceLabel?.let(::add)
                         add(song.artists)
                         song.album.takeIf(String::isNotBlank)?.let(::add)

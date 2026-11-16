@@ -4,6 +4,7 @@ import com.lladlam.melox.core.music.model.MusicPage
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
+import com.lladlam.melox.core.music.model.SourceId
 import com.lladlam.melox.core.music.provider.MusicCapability
 import com.lladlam.melox.core.music.provider.MusicProvider
 import com.lladlam.melox.core.music.provider.MusicProviderRegistry
@@ -16,8 +17,8 @@ import org.junit.Test
 
 class UnifiedMusicServiceTest {
     @Test fun dynamicWhitelistPreservesPaginationAndUnavailableIdentity() = runBlocking {
-        val dynamic = com.lladlam.melox.core.music.model.SourceId.parse("plugin:org.example.search")!!
-        val missing = com.lladlam.melox.core.music.model.SourceId.parse("plugin:org.example.missing")!!
+        val dynamic = SourceId.parse("plugin:org.example.search")!!
+        val missing = SourceId.parse("plugin:org.example.missing")!!
         val registry = MusicProviderRegistry(listOf(FakeSearchProvider(MusicSource.Netease, mutableListOf())))
         val plugin = object : MusicProvider, SearchCapability {
             override val sourceId = dynamic
@@ -93,6 +94,48 @@ class UnifiedMusicServiceTest {
         assertEquals(1, result.failures.size)
         assertEquals(MusicSource.Kugou, result.failures.single().source)
         assertTrue(result.failures.single().message.contains("simulated failure"))
+    }
+
+    @Test
+    fun interleavedResultsKeepSameSongOnDifferentPlatforms() = runBlocking {
+        val calls = mutableListOf<MusicSource>()
+        val service = UnifiedMusicService(MusicProviderRegistry(listOf(
+            FakeSearchProvider(MusicSource.Netease, calls),
+            FakeSearchProvider(MusicSource.Kuwo, calls),
+        )))
+        val result = service.searchSongs("爱错", setOf(MusicSource.Netease, MusicSource.Kuwo))
+
+        assertEquals(
+            listOf(MusicSource.Kuwo, MusicSource.Netease),
+            result.interleavedTracks(SourceId.fromBuiltIn(MusicSource.Kuwo)).map { it.id.source },
+        )
+    }
+
+    @Test
+    fun limitedProviderCoolsDownWhileOtherProvidersStillSearch() = runBlocking {
+        val goodCalls = mutableListOf<MusicSource>()
+        var limitedCalls = 0
+        val limited = object : MusicProvider, SearchCapability {
+            override val source = MusicSource.QQMusic
+            override val displayName = source.displayName
+            override val capabilities = setOf(MusicCapability.Search)
+            override suspend fun searchSongs(query: String, page: Int, pageSize: Int): MusicPage<MusicTrack> {
+                limitedCalls++
+                error("QQ音乐请求失败：HTTP 429")
+            }
+        }
+        val service = UnifiedMusicService(MusicProviderRegistry(listOf(
+            limited,
+            FakeSearchProvider(MusicSource.Kuwo, goodCalls),
+        )))
+        val sources = setOf(MusicSource.QQMusic, MusicSource.Kuwo)
+        service.searchSongs("红尘客栈", sources)
+        val result = service.searchSongs("梦想启动", sources)
+
+        assertEquals(1, limitedCalls)
+        assertEquals(2, goodCalls.size)
+        assertEquals(MusicSource.Kuwo, result.tracks.single().id.source)
+        assertEquals(MusicSource.QQMusic, result.failures.single().source)
     }
 
     private class FakeSearchProvider(

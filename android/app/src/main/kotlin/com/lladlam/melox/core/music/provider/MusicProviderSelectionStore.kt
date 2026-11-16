@@ -42,6 +42,7 @@ object MusicProviderSelectionStore {
         val values = preferences.getStringSet(KeyUnifiedPlugins, emptySet()).orEmpty().toMutableSet()
         if (enabled) { require(values.size < 32 || source.value in values); values.add(source.value) } else values.remove(source.value)
         preferences.edit().putStringSet(KeyUnifiedPlugins, values).apply()
+        selectionRevision.value = selectionRevision.value + 1
     }
 
     /** Keep optional providers visible so their setup/login screen is reachable. */
@@ -51,6 +52,8 @@ object MusicProviderSelectionStore {
                 source != MusicSource.Kugou &&
                 source != MusicSource.Kuwo
         }
+
+    fun aggregationSources(): List<MusicSource> = visibleSources() + MusicSource.Kuwo
 
     fun selectedSource(context: Context): MusicSource {
         val preferences = context.applicationContext
@@ -100,6 +103,7 @@ object MusicProviderSelectionStore {
             editor.putBoolean(KeyAutomaticFallback, false)
         }
         editor.apply()
+        selectionRevision.value = selectionRevision.value + 1
     }
 
     fun automaticFallbackEnabled(context: Context): Boolean =
@@ -121,7 +125,7 @@ object MusicProviderSelectionStore {
             .getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
         val raw = preferences.getStringSet(KeyUnifiedSources, null)
         val parsed = raw?.mapNotNullTo(linkedSetOf()) { value ->
-            visibleSources().firstOrNull { it.storageValue == value }
+            aggregationSources().firstOrNull { it.storageValue == value }
         }.orEmpty()
         return parsed.ifEmpty { linkedSetOf(selectedSource(context)) }
     }
@@ -129,13 +133,14 @@ object MusicProviderSelectionStore {
     fun setUnifiedSources(context: Context, sources: Set<MusicSource>) {
         // An empty whitelist is normalized back to the current provider so a
         // single switch can never accidentally turn into an "all providers" request.
-        val safeSources = sources.filterTo(linkedSetOf()) { it in visibleSources() }
+        val safeSources = sources.filterTo(linkedSetOf()) { it in aggregationSources() }
             .ifEmpty { setOf(selectedSource(context)) }
         context.applicationContext
             .getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
             .edit()
             .putStringSet(KeyUnifiedSources, safeSources.mapTo(linkedSetOf()) { it.storageValue })
             .apply()
+        selectionRevision.value = selectionRevision.value + 1
     }
 
     fun setUnifiedSourceEnabled(

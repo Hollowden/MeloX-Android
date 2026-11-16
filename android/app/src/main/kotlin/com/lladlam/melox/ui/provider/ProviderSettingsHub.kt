@@ -347,7 +347,7 @@ fun ProviderSettingsHub(
 
                     if (unifiedEnabled) {
                         Spacer(Modifier.height(8.dp))
-                        MusicProviderSelectionStore.visibleSources().forEach { source ->
+                        MusicProviderSelectionStore.aggregationSources().forEach { source ->
                             val account = accountManager.state(source)
                             ProviderSettingToggle(
                                 title = source.displayName,

@@ -2,11 +2,17 @@ package com.lladlam.melox.core.provider.lxuser
 
 import android.content.Context
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Stores LX user-source metadata separately from the executable script body. */
 object LxUserSourceStore {
+    private val revision = MutableStateFlow(0L)
+    internal val changes = revision.asStateFlow()
+
     private const val PreferencesName = "melox_lx_user_sources"
     private const val KeyList = "list"
     private const val MaxSources = 20
@@ -50,8 +56,10 @@ object LxUserSourceStore {
         val dir = File(app.filesDir, "lx-user-sources").apply { mkdirs() }
         File(dir, "$id.js").writeText(normalizedScript, Charsets.UTF_8)
         LxUserRuntime.evict(id)
+        LxUserRuntime.evict(lxSearchSessionId(id))
         val records = (list(app) + record).takeLast(MaxSources)
         saveList(app, records)
+        revision.update { it + 1 }
         return record
     }
 
@@ -63,7 +71,9 @@ object LxUserSourceStore {
         val app = context.applicationContext
         File(File(app.filesDir, "lx-user-sources"), "$id.js").delete()
         LxUserRuntime.evict(id)
+        LxUserRuntime.evict(lxSearchSessionId(id))
         saveList(app, list(app).filterNot { it.id == id })
+        revision.update { it + 1 }
     }
 
     private fun saveList(context: Context, records: List<LxUserSourceRecord>) {

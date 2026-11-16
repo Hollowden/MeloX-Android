@@ -4,6 +4,8 @@ import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
 import com.lladlam.melox.core.music.model.SourceId
 import com.lladlam.melox.core.music.model.MusicPage
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -20,6 +22,8 @@ import kotlinx.coroutines.coroutineScope
 class UnifiedMusicService(
     private val registry: MusicProviderRegistry,
 ) {
+    private val rateLimitedUntil = ConcurrentHashMap<SourceId, Long>()
+
     data class SearchFailure(
         val sourceId: SourceId,
         val message: String,
@@ -33,7 +37,17 @@ class UnifiedMusicService(
         val failures: List<SearchFailure> = emptyList(),
         val aggregated: List<AggregatedTrack> = emptyList(),
         val pages: Map<SourceId, MusicPage<MusicTrack>> = emptyMap(),
-    )
+    ) {
+        fun interleavedTracks(preferredSource: SourceId): List<MusicTrack> {
+            val lists = pages.entries.sortedBy { it.key != preferredSource }.map { it.value.items }
+            val longest = lists.maxOfOrNull { it.size } ?: return emptyList()
+            return buildList {
+                repeat(longest) { index ->
+                    lists.mapNotNullTo(this) { it.getOrNull(index) }
+                }
+            }.distinctBy { it.id }
+        }
+    }
 
     suspend fun searchSongs(
         query: String,
@@ -62,6 +76,10 @@ class UnifiedMusicService(
                     source to Result.failure<MusicPage<MusicTrack>>(IllegalStateException("${source.displayName} 当前不可用或没有搜索能力"))
                 } else {
                     source to try {
+                        val remainingMs = rateLimitedUntil[source]?.let { deadline ->
+                            TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+                        } ?: 0L
+                        check(remainingMs <= 0L) { "音源限流，请约 ${(remainingMs + 999) / 1_000} 秒后重试" }
                         val result = search.searchSongs(
                             query = normalized,
                             page = page.coerceAtLeast(1),
@@ -71,7 +89,12 @@ class UnifiedMusicService(
                         require(result.items.all { it.id.sourceId == source }) { "search source identity mismatch" }
                         Result.success(result)
                     } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (error: Exception) { Result.failure(error) }
+                    catch (error: Exception) {
+                        if (rateLimitMessage.containsMatchIn(error.message.orEmpty())) {
+                            rateLimitedUntil[source] = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+                        }
+                        Result.failure(error)
+                    }
                 }
             }
         }.awaitAll()
@@ -85,6 +108,13 @@ class UnifiedMusicService(
             failures = requests.mapNotNull { (source, result) -> result.exceptionOrNull()?.let { SearchFailure(source, it.message ?: "搜索失败") } },
             aggregated = TrackAggregation.aggregate(tracks),
             pages = pages,
+        )
+    }
+
+    private companion object {
+        val rateLimitMessage = Regex(
+            """\bHTTP\s+429\b|too many requests|访问(?:次数)?过多|次数过多|请求(?:过于)?频繁""",
+            RegexOption.IGNORE_CASE,
         )
     }
 

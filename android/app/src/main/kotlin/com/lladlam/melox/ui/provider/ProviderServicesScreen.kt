@@ -512,11 +512,11 @@ fun ProviderServicesScreen(
                 showTopSeparator = false,
             )
             if (unifiedEnabled) {
-                MusicProviderSelectionStore.visibleSources().forEach { source ->
+                MusicProviderSelectionStore.aggregationSources().forEach { source ->
                     val account = accountManager.state(source)
                     MeloXIosListRow(
                         title = source.displayName,
-                        subtitle = if (account.loggedIn) stringResource(R.string.provider_unified_participates) else stringResource(R.string.provider_unified_skipped),
+                        subtitle = if (account.loggedIn) stringResource(R.string.provider_unified_participates) else stringResource(R.string.provider_unified_logged_out),
                         detail = if (source in unifiedSources) stringResource(R.string.provider_enabled) else "",
                         leading = { Spacer(Modifier.width(25.dp)) },
                         onClick = {

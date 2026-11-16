@@ -182,7 +182,8 @@ class LxUserPlaybackResolver(
         val providerSource = when (code) {
             "wy" -> MusicSource.Netease
             "tx" -> MusicSource.QQMusic
-            "kg" -> if (track.id.source == MusicSource.KugouLite) MusicSource.KugouLite else MusicSource.Kugou
+            // The catalog registry exposes Kugou Lite, which uses the same LX source code.
+            "kg" -> MusicSource.KugouLite
             "kw" -> MusicSource.Kuwo
             else -> return null
         }
