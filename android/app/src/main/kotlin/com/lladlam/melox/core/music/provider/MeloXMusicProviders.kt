@@ -53,7 +53,10 @@ object MeloXMusicProviders {
         val appContext = context.applicationContext
         val nativeProviders = listOf<MusicProvider>(
                 NeteaseProvider({ PlaybackAccountStore.neteaseCookie(appContext) }, httpClient),
-                QQMusicProvider({ PlaybackAccountStore.qqSession(appContext) }, httpClient),
+                QQMusicProvider(
+                    { PlaybackAccountStore.qqSession(appContext) }, httpClient,
+                    { old, next -> QQMusicSessionStore.replaceIfCurrent(appContext, old, next) },
+                ),
                 KugouProvider({ PlaybackAccountStore.kugouSession(appContext) }, httpClient),
                 liteProvider(appContext, httpClient),
                 QishuiProvider({ QishuiSessionStore.read(appContext) }, httpClient),
@@ -110,6 +113,7 @@ object MeloXMusicProviders {
                 QQMusicProvider(
                     sessionProvider = { QQMusicSessionStore.read(context) },
                     httpClient = httpClient,
+                    saveRefreshedSession = { old, next -> QQMusicSessionStore.replaceIfCurrent(context, old, next) },
                 ),
                 liteProvider(context, httpClient),
                 QishuiProvider({ QishuiSessionStore.read(context) }, httpClient),
