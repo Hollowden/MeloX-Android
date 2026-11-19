@@ -11,6 +11,7 @@ import org.json.JSONObject
 
 internal data class LxSongSearchHit(
     val key: String,
+    val scriptId: String,
     val scriptName: String,
     val title: String,
     val artist: String,
@@ -18,11 +19,26 @@ internal data class LxSongSearchHit(
     val artworkUrl: String?,
 )
 
+internal enum class LxSearchStatus { Results, Empty, PlaybackOnly, Failed, Disabled }
+
+internal data class LxScriptSearchState(
+    val id: String,
+    val name: String,
+    val status: LxSearchStatus,
+    val count: Int = 0,
+)
+
 internal data class LxSongSearchResult(
     val hits: List<LxSongSearchHit> = emptyList(),
     val failures: List<String> = emptyList(),
     val hasMore: Boolean = false,
-)
+    val scripts: List<LxScriptSearchState> = emptyList(),
+) {
+    fun forScript(id: String): LxSongSearchResult = copy(
+        hits = hits.filter { it.scriptId == id },
+        scripts = scripts.filter { it.id == id },
+    )
+}
 
 internal suspend fun searchInstalledLxSources(
     context: Context,
@@ -36,14 +52,17 @@ internal suspend fun searchInstalledLxSources(
                 val name = record.metadata.name ?: record.id
                 try {
                     val script = LxUserSourceStore.script(context, record.id)
-                        ?: return@runInterruptible LxSongSearchResult()
+                        ?: error("LX script missing")
                     searchScript(record.id, name, script, query, page, pageSize)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: InterruptedException) {
                     throw error
                 } catch (_: Exception) {
-                    LxSongSearchResult(failures = listOf(name))
+                    LxSongSearchResult(
+                        failures = listOf(name),
+                        scripts = listOf(LxScriptSearchState(record.id, name, LxSearchStatus.Failed)),
+                    )
                 }
             }
         }
@@ -52,6 +71,7 @@ internal suspend fun searchInstalledLxSources(
         hits = results.flatMap { it.hits },
         failures = results.flatMap { it.failures },
         hasMore = results.any { it.hasMore },
+        scripts = results.flatMap { it.scripts },
     )
 }
 
@@ -68,7 +88,9 @@ private fun searchScript(
     val runtime = LxUserRuntime.session(lxSearchSessionId(id), script)
     // Some scripts declare the same search handler under all of their playback
     // platforms. Call it once per script to avoid sending identical requests.
-    val source = runtime.declaredSearchSources().firstOrNull() ?: return LxSongSearchResult()
+    val source = runtime.declaredSearchSources().firstOrNull() ?: return LxSongSearchResult(
+        scripts = listOf(LxScriptSearchState(id, name, LxSearchStatus.PlaybackOnly)),
+    )
     val raw = runtime.callAction("search", mapOf(
         "source" to source,
         "text" to query,
@@ -85,6 +107,7 @@ private fun searchScript(
             if (title.isBlank() || artist.isBlank()) continue
             add(LxSongSearchHit(
                 key = "lx:$id:$index",
+                scriptId = id,
                 scriptName = name,
                 title = title,
                 artist = artist,
@@ -93,5 +116,9 @@ private fun searchScript(
             ))
         }
     }
-    return LxSongSearchResult(hits = hits, hasMore = !result.optBoolean("isEnd", songs.length() < pageSize))
+    return LxSongSearchResult(
+        hits = hits,
+        hasMore = !result.optBoolean("isEnd", songs.length() < pageSize),
+        scripts = listOf(LxScriptSearchState(id, name, if (hits.isEmpty()) LxSearchStatus.Empty else LxSearchStatus.Results, hits.size)),
+    )
 }

@@ -115,6 +115,7 @@ object MeloXMusicProviders {
                     httpClient = httpClient,
                     saveRefreshedSession = { old, next -> QQMusicSessionStore.replaceIfCurrent(context, old, next) },
                 ),
+                KugouProvider({ KugouSessionStore.read(context) }, httpClient),
                 liteProvider(context, httpClient),
                 QishuiProvider({ QishuiSessionStore.read(context) }, httpClient),
                 KuwoProvider({ KuwoSessionStore.read(context) }, httpClient),

@@ -807,7 +807,7 @@
     <string name="search_source_hint">Search %1$s songs, playlists, albums, or artists</string>
     <string name="search_source_all">All sources</string>
     <string name="search_source_lx">LX sources</string>
-    <string name="search_enable_multiple_sources">Search more sources</string>
+    <string name="search_enable_multiple_sources">Multi-source search</string>
     <string name="search_lx_loading">Searching LX sources…</string>
     <string name="search_lx_failed">LX search failed: %1$s</string>
     <string name="search_lx_no_playback_match">No matching song in the selected catalogs</string>
@@ -1664,4 +1664,11 @@
     <string name="settings_mcp_copy_token">Copy token</string>
     <string name="settings_mcp_copied">Token copied</string>
     <string name="settings_mcp_failed">MCP failed to start: %1$s</string>
+    <string name="search_select_sources">Search catalogs</string>
+    <string name="search_lx_named">LX · %1$s</string>
+    <string name="search_lx_result_count">%1$d results</string>
+    <string name="search_lx_empty">No results for this query</string>
+    <string name="search_lx_playback_only">Playback resolver. Search its platform catalog to find songs.</string>
+    <string name="search_lx_request_failed">Search request failed</string>
+    <string name="search_lx_disabled">Enable third-party music sources to search</string>
 </resources>

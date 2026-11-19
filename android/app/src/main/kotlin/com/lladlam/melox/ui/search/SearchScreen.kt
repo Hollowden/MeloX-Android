@@ -149,6 +149,8 @@ import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
 import com.lladlam.melox.core.music.provider.ThirdPartyMusicSourceConsentStore
 import com.lladlam.melox.core.provider.lxuser.LxSongSearchHit
 import com.lladlam.melox.core.provider.lxuser.LxSongSearchResult
+import com.lladlam.melox.core.provider.lxuser.LxSearchStatus
+import com.lladlam.melox.core.provider.lxuser.LxScriptSearchState
 import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
 import com.lladlam.melox.core.provider.lxuser.searchInstalledLxSources
 import com.lladlam.melox.playback.isSafeLxPlaybackMatch
@@ -308,12 +310,12 @@ fun SearchScreen(
     val unifiedService = remember(providerRegistry) { UnifiedMusicService(providerRegistry) }
     val selectionRevision by MusicProviderSelectionStore.changes.collectAsState()
     val unifiedEnabled = remember(appContext, selectionRevision) {
-        MusicProviderSelectionStore.unifiedEnabled(appContext)
+        MusicProviderSelectionStore.songSearchEnabled(appContext)
     }
     val unifiedSources = remember(appContext, selectionRevision) {
-        MusicProviderSelectionStore.unifiedSourceIds(appContext)
+        MusicProviderSelectionStore.songSearchSourceIds(appContext)
     }
-    val useUnifiedSongSearch = unifiedEnabled && unifiedSources.isNotEmpty()
+    val useUnifiedSongSearch = unifiedEnabled
 
     val availableKinds = remember(source, providerCatalog) {
         if (source == MusicSource.Netease) {
@@ -357,11 +359,9 @@ fun SearchScreen(
     }
     var searchingLx by remember { mutableStateOf(false) }
     var matchingLxTrack by remember { mutableStateOf(false) }
-    val lxFilter = "lx"
-    val hasLxScripts = remember(appContext, lxSourceRevision) {
-        LxUserSourceStore.list(appContext).isNotEmpty()
-    }
-    val includesLxResults = hasLxScripts && ThirdPartyMusicSourceConsentStore.enabled(appContext)
+    val installedLxScripts = remember(appContext, lxSourceRevision) { LxUserSourceStore.list(appContext) }
+    val includesLxResults = installedLxScripts.isNotEmpty()
+    var showSearchSources by rememberSaveable { mutableStateOf(false) }
     var resultSource by rememberSaveable(
         source.name, unifiedEnabled, includesLxResults, unifiedSources.map { it.value }.sorted().joinToString(),
     ) {
@@ -501,7 +501,9 @@ fun SearchScreen(
                                 if (lxEnabled) {
                                     searchInstalledLxSources(appContext, keyword, page, 25)
                                 } else {
-                                    LxSongSearchResult()
+                                    LxSongSearchResult(scripts = installedLxScripts.map {
+                                        LxScriptSearchState(it.id, it.metadata.name ?: it.id, LxSearchStatus.Disabled)
+                                    })
                                 }
                             }
                             val catalogs = withContext(Dispatchers.IO) {
@@ -818,35 +820,44 @@ fun SearchScreen(
         if (query.isNotBlank() && selectedPlugin == null) {
             SearchScopes(kind = kind, availableKinds = availableKinds, onKind = { kind = it })
             if (kind == MeloXSearchKind.Songs && linkedId == null) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.search_enable_multiple_sources), Modifier.weight(1f))
+                    androidx.compose.material3.Switch(
+                        checked = unifiedEnabled,
+                        onCheckedChange = { MusicProviderSelectionStore.setSongSearchEnabled(appContext, it) },
+                    )
+                    TextButton(onClick = { showSearchSources = !showSearchSources }) {
+                        Text(stringResource(R.string.search_select_sources))
+                    }
+                }
+                if (showSearchSources) {
+                    val catalogOptions = (MusicProviderSelectionStore.aggregationSources() + MusicSource.Kugou)
+                        .distinct().mapNotNull { platform ->
+                            providerRegistry[platform]?.takeIf { it is SearchCapability }?.let {
+                                it.sourceId to it.displayName
+                            }
+                        } + enabledPluginProviders.map { it.sourceId to it.displayName }
+                    LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(catalogOptions, key = { it.first.value }) { (id, name) ->
+                            androidx.compose.material3.FilterChip(
+                                selected = id in unifiedSources,
+                                onClick = { MusicProviderSelectionStore.setSongSearchSourceEnabled(appContext, id, id !in unifiedSources) },
+                                label = { Text(name) },
+                            )
+                        }
+                    }
+                }
                 if (useUnifiedSongSearch) {
                     val sourceOptions = buildList<Pair<String?, String>> {
                         add(null to stringResource(R.string.search_source_all))
                         unifiedSources.sortedBy { it != currentProvider.sourceId }.forEach { id ->
                             add(id.value to (providerRegistry[id]?.displayName ?: id.displayName))
                         }
-                        if (includesLxResults) {
-                            add(lxFilter to stringResource(R.string.search_source_lx))
+                        installedLxScripts.forEach { script ->
+                            add("lx:${script.id}" to stringResource(R.string.search_lx_named, script.metadata.name ?: script.id))
                         }
                     }
                     SearchResultSourceTabs(sourceOptions, resultSource) { resultSource = it }
-                } else {
-                    TextButton(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        onClick = {
-                            val previouslySelected = MusicProviderSelectionStore.unifiedSources(appContext)
-                            if (previouslySelected.size < 2) {
-                                MusicProviderSelectionStore.setUnifiedSources(
-                                    appContext,
-                                    previouslySelected + setOf(source, MusicSource.QQMusic, MusicSource.Kuwo, MusicSource.KugouLite),
-                                )
-                            }
-                            resultSource = null
-                            skipSearchDebounce = true
-                            MusicProviderSelectionStore.setUnifiedEnabled(appContext, true)
-                        },
-                    ) {
-                        Text(stringResource(R.string.search_enable_multiple_sources))
-                    }
                 }
             }
         }
@@ -905,8 +916,12 @@ fun SearchScreen(
                     values = visibleProviderSongs,
                     failures = unifiedFailures.filter { resultSource == null || it.sourceId.value == resultSource },
                     showSource = true,
-                    lxResults = if (resultSource == null || resultSource == lxFilter) lxSearchResult else LxSongSearchResult(),
-                    searchingLx = searchingLx && (resultSource == null || resultSource == lxFilter),
+                    lxResults = when {
+                        resultSource == null -> lxSearchResult
+                        resultSource?.startsWith("lx:") == true -> lxSearchResult.forScript(resultSource!!.removePrefix("lx:"))
+                        else -> LxSongSearchResult()
+                    },
+                    searchingLx = searchingLx && (resultSource == null || resultSource?.startsWith("lx:") == true),
                     onLxHit = { hit ->
                         if (!matchingLxTrack) {
                             matchingLxTrack = true
@@ -1488,15 +1503,20 @@ internal fun ProviderSearchSongResults(
                 )
             }
         }
-        if (lxResults.failures.isNotEmpty()) {
-            item {
-                Text(
-                    stringResource(R.string.search_lx_failed, lxResults.failures.joinToString(" · ")),
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
+        items(lxResults.scripts, key = { "state:${it.id}" }) { script ->
+            val status = when (script.status) {
+                LxSearchStatus.Results -> stringResource(R.string.search_lx_result_count, script.count)
+                LxSearchStatus.Empty -> stringResource(R.string.search_lx_empty)
+                LxSearchStatus.PlaybackOnly -> stringResource(R.string.search_lx_playback_only)
+                LxSearchStatus.Failed -> stringResource(R.string.search_lx_request_failed)
+                LxSearchStatus.Disabled -> stringResource(R.string.search_lx_disabled)
             }
+            Text(
+                stringResource(R.string.search_lx_named, script.name) + " · " + status,
+                modifier = Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
         }
         if (values.isEmpty() && lxResults.hits.isEmpty() && !searchingLx) {
             item { SearchEmptyInline(stringResource(R.string.search_no_songs)) }
@@ -1511,7 +1531,7 @@ internal fun ProviderSearchSongResults(
                 Column(Modifier.weight(1f)) {
                     Text(hit.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp, fontWeight = FontWeight.Medium)
                     Text(
-                        listOf(hit.scriptName, hit.artist, hit.album).filter(String::isNotBlank).joinToString(" · "),
+                        listOf(stringResource(R.string.search_lx_named, hit.scriptName), hit.artist, hit.album).filter(String::isNotBlank).joinToString(" · "),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 13.sp,

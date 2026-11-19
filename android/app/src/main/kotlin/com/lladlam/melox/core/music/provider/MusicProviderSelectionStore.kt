@@ -32,6 +32,32 @@ object MusicProviderSelectionStore {
     private const val KeyUnifiedSources = "unified_sources"
     private const val KeyUnifiedPlugins = "unified_plugin_sources"
 
+    fun songSearchEnabled(context: Context): Boolean = context.applicationContext
+        .getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+        .getBoolean("song_search_enabled", true)
+
+    fun setSongSearchEnabled(context: Context, enabled: Boolean) {
+        context.applicationContext.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit().putBoolean("song_search_enabled", enabled).apply()
+        selectionRevision.value = selectionRevision.value + 1
+    }
+
+    fun songSearchSourceIds(context: Context): Set<SourceId> {
+        val defaults = setOf(MusicSource.Netease, MusicSource.QQMusic, MusicSource.Kugou, MusicSource.Kuwo)
+            .mapTo(linkedSetOf()) { it.storageValue }
+        return context.applicationContext.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .getStringSet("song_search_sources", defaults).orEmpty()
+            .mapNotNullTo(linkedSetOf(), SourceId::parse)
+    }
+
+    fun setSongSearchSourceEnabled(context: Context, source: SourceId, enabled: Boolean) {
+        val updated = songSearchSourceIds(context).toMutableSet()
+        if (enabled) updated.add(source) else updated.remove(source)
+        context.applicationContext.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit().putStringSet("song_search_sources", updated.mapTo(linkedSetOf()) { it.value }).apply()
+        selectionRevision.value = selectionRevision.value + 1
+    }
+
     fun unifiedSourceIds(context: Context): Set<SourceId> = unifiedSources(context).mapTo(linkedSetOf(), SourceId::fromBuiltIn) +
         context.applicationContext.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
             .getStringSet(KeyUnifiedPlugins, emptySet()).orEmpty().mapNotNull(SourceId::parse).filter { it.builtIn == null }
