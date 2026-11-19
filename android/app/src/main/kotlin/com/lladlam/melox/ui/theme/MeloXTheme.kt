@@ -7,7 +7,7 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -151,13 +151,10 @@ internal fun MeloXBrandLogo(boxSize: Dp, modifier: Modifier = Modifier) {
                 .clip(MeloXBrandLogoShape),
             contentAlignment = Alignment.Center,
         ) {
-            // 整图放大到 boxSize（= 内容盒的 1.5 倍）居中，内容正好贴满内容盒。
-            // ⚠ 必须 requiredSize：`size()` 会被内容盒的约束压回 69.33dp（红块又缩回
-            //   中心 2/3，等于没修）；requiredSize 才让整图真正溢出、由 clip 裁出圆角。
             Image(
-                painter = painterResource(R.drawable.ic_launcher_foreground),
+                painter = painterResource(R.drawable.holden_cover),
                 contentDescription = null,
-                modifier = Modifier.requiredSize(boxSize),
+                modifier = Modifier.fillMaxSize(),
             )
         }
     }
