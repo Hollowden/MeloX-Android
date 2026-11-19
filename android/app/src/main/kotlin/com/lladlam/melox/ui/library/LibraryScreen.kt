@@ -53,6 +53,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -134,6 +136,8 @@ import com.lladlam.melox.playback.ProviderPlaybackCommands
 import com.lladlam.melox.core.model.SearchSong
 import com.lladlam.melox.core.music.model.MusicAccountSummary
 import com.lladlam.melox.core.music.model.MusicAlbumSummary
+import com.lladlam.melox.core.music.model.MusicArtistRef
+import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.MusicArtistSummary
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.provider.MeloXLegacyUiBridge
@@ -183,7 +187,9 @@ import com.lladlam.melox.ui.glass.meloXIconDrawingScale
 import com.lladlam.melox.ui.player.MeloXFlowingLightBackdrop
 import com.lladlam.melox.ui.player.MeloXSongActionsOverlay
 import com.lladlam.melox.ui.sharing.MeloXNeteaseResourceShareActivity
+import com.lladlam.melox.ui.settings.MeloXPageAppearance
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
+import com.lladlam.melox.ui.sonify.library.SonifyLibraryHost
 import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.ui.settings.MeloXSwipeFullAction
 import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
@@ -288,13 +294,21 @@ fun LibraryScreen(
     forcedPageName: String? = null,
     playlistBackEnabled: Boolean = true,
     onModalVisibilityChanged: (Boolean) -> Unit = {},
+    onOpenSettings: (() -> Unit)? = null,
+    onOpenPlayer: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val sonifyAppearance = MeloXSettingsRuntime.pageAppearance == MeloXPageAppearance.Sonify
     val window = rememberMeloXWindowInfo()
     val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
     val client = remember(appContext) {
         NeteaseLibraryClient(
+            cookieProvider = { NeteaseSessionStore.readCookie(appContext) },
+        )
+    }
+    val collectionDetails = remember(appContext) {
+        NeteaseCollectionDetailsClient(
             cookieProvider = { NeteaseSessionStore.readCookie(appContext) },
         )
     }
@@ -391,6 +405,18 @@ fun LibraryScreen(
                     val trusted = reconcileLikedSongs(fresh, cache.loadSnapshot(userId))
                     snapshot = trusted
                     cache.saveSnapshot(userId, trusted)
+                    runCatching { withContext(Dispatchers.IO) { collectionDetails.savedAlbums() } }
+                        .onSuccess { albums ->
+                            savedAlbums = albums.map { album ->
+                                MusicAlbumSummary(
+                                    id = MusicResourceId(MusicSource.Netease, album.id.toString()),
+                                    title = album.name,
+                                    artworkUrl = album.artworkUrl,
+                                    artists = listOf(MusicArtistRef(name = album.artistText)),
+                                )
+                            }
+                        }
+                        .onFailure { savedAlbums = emptyList() }
                 }
                 .onFailure { errorMessage = it.message ?: "音乐库加载失败" }
         } else {
@@ -596,13 +622,27 @@ fun LibraryScreen(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                         // ⚠ 稳定值：可见式 `statusBarsPadding()` 在沉浸切换时会 0↔真实高度跳。
-                        .padding(top = rememberMeloXStableStatusBarHeight())
+                        // Sonify 的 Title 自己消费状态栏（大标题 spacer），这里不能再叠一层。
+                        .padding(top = if (sonifyAppearance) 0.dp else rememberMeloXStableStatusBarHeight())
                         .padding(horizontal = if (window.supportsTwoPane) window.gutter else 0.dp),
                 ) {
+                    if (sonifyAppearance) {
+                        SonifyLibraryHost(
+                            source = source,
+                            session = session,
+                            snapshot = snapshot,
+                            providerAlbums = savedAlbums,
+                            providerArtists = followedArtists,
+                            loading = loading,
+                            errorMessage = errorMessage,
+                            onRefresh = { scope.launch { refreshLibrary() } },
+                            onOpenSettings = onOpenSettings,
+                        )
+                        return@Column
+                    }
                     MeloXIosTopBar(
                         title = stringResource(R.string.tab_library),
                     )
-
                     MeloXLibrarySegmentedPicker(
                         selected = selectedPage,
                         onSelected = { selectedPage = it },
@@ -1480,6 +1520,64 @@ private fun MeloXLibraryLoginUnavailable(
 }
 
 @Composable
+private fun SonifyLibraryOverview(
+    selected: MeloXLibraryPage,
+    onSelected: (MeloXLibraryPage) -> Unit,
+    source: MusicSource,
+    forcedPageName: String? = null,
+    likedCount: Int?,
+    playlistCount: Int?,
+    albumCount: Int?,
+    artistCount: Int?,
+    recentCount: Int?,
+) {
+    val pickerContext = LocalContext.current.applicationContext
+    val pageProvider = remember(source, pickerContext) {
+        if (source == MusicSource.Netease) null
+        else runCatching { MeloXMusicProviders.create(pickerContext).require(source) }.getOrNull()
+    }
+    val pages = MeloXLibraryPage.entries.filter { it.isEnabled(source, pageProvider) || it.name == forcedPageName }
+    val counts = mapOf(
+        MeloXLibraryPage.Songs to likedCount,
+        MeloXLibraryPage.Playlists to playlistCount,
+        MeloXLibraryPage.Albums to albumCount,
+        MeloXLibraryPage.Artists to artistCount,
+        MeloXLibraryPage.History to recentCount,
+    )
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(pages, key = { "sonify-library-${it.name}" }) { page ->
+            val active = page == selected
+            Column(
+                modifier = Modifier
+                    .width(148.dp)
+                    .height(104.dp)
+                    .background(
+                        if (active) MaterialTheme.colorScheme.primary.copy(alpha = .20f)
+                        else MaterialTheme.colorScheme.surface.copy(alpha = .10f),
+                        RoundedCornerShape(22.dp),
+                    )
+                    .clickable { onSelected(page) }
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    stringResource(page.titleRes),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                )
+                counts[page]?.let { count ->
+                    Text("$count 首", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MeloXLibrarySegmentedPicker(
     selected: MeloXLibraryPage,
     onSelected: (MeloXLibraryPage) -> Unit,
@@ -2334,9 +2432,11 @@ private fun MeloXPlaylistDetailScreen(
         ?: providedSongs?.firstOrNull()?.providerTrack?.id?.sourceId
     val isProviderCollection = isProviderPlaylist || providerAlbum != null || collectionSource != null
     val canDownloadCollection = remember(collectionSourceId) {
-        collectionSourceId == null || MeloXMusicProviders.create(appContext)[collectionSourceId]?.let {
-            it is DownloadCapability && (collectionSourceId.builtIn != null || it.supports(com.lladlam.melox.core.music.provider.MusicCapability.Download))
-        } == true
+        collectionSourceId == null ||
+            collectionSourceId.builtIn == MusicSource.Netease ||
+            MeloXMusicProviders.create(appContext)[collectionSourceId]?.let {
+                it is DownloadCapability && (collectionSourceId.builtIn != null || it.supports(com.lladlam.melox.core.music.provider.MusicCapability.Download))
+            } == true
     }
     var detail by rememberRetainedPageState(initialPlaylist.id, collectionSourceId) { mutableStateOf<NeteasePlaylistDetail?>(null) }
     var detailLoaded by rememberRetainedPageState(initialPlaylist.id, collectionSourceId) { mutableStateOf(false) }
@@ -2468,7 +2568,10 @@ private fun MeloXPlaylistDetailScreen(
                             coverUrl = album.album.artworkUrl,
                             trackCount = album.songs.size,
                             creatorName = album.album.artistText,
-                            description = album.description,
+                            description = listOfNotNull(
+                                album.album.releaseDate?.let { "发行日期：$it" },
+                                album.description,
+                            ).joinToString("\n").takeIf(String::isNotBlank),
                         ),
                         songs = album.songs,
                     )

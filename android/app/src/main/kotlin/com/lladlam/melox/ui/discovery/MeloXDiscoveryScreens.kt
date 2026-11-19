@@ -162,7 +162,16 @@ import com.lladlam.melox.ui.player.MeloXFlowingLightBackdrop
 import com.lladlam.melox.ui.podcast.MeloXPodcastScreen
 import com.lladlam.melox.ui.library.MeloXUnifiedPlaylistDetailScreen
 import com.lladlam.melox.ui.library.MeloXUnifiedSongListDetailScreen
+import com.lladlam.melox.ui.settings.MeloXPageAppearance
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
+import com.lladlam.melox.ui.sonify.SonifyHomeCollection
+import com.lladlam.melox.ui.sonify.SonifyHomePage
+import com.lladlam.melox.ui.sonify.SonifyHomePodcast
+import com.lladlam.melox.ui.sonify.SonifyHomeRecommendationStore
+import com.lladlam.melox.ui.sonify.SonifyHomeSection
+import com.lladlam.melox.ui.sonify.toMusicTrack
+import com.lladlam.melox.ui.sonify.toSearchSong
+import com.lladlam.melox.core.provider.local.LocalProvider
 import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.ui.meloXPageRecede
 import com.lladlam.melox.ui.layout.rememberMeloXStableStatusBarHeight
@@ -206,7 +215,7 @@ private object HomeNoIndication : IndicationNodeFactory {
     override fun equals(other: Any?): Boolean = other === this
 }
 
-private sealed interface DiscoveryTrack {
+internal sealed interface DiscoveryTrack {
     val key: String
     val title: String
     val artist: String
@@ -227,7 +236,7 @@ private sealed interface DiscoveryTrack {
     }
 }
 
-private sealed interface DiscoveryCollection {
+internal sealed interface DiscoveryCollection {
     val key: String
     val title: String
     val artworkUrl: String?
@@ -329,14 +338,14 @@ private fun restoreLastCollection(context: android.content.Context): DiscoveryCo
     return decodeDiscoveryCollection(prefs.getString(LastCollectionKey, null))
 }
 
-private data class HomeAccountUi(
+internal data class HomeAccountUi(
     val name: String,
     val avatarUrl: String?,
     val subtitle: String,
     val onClick: (() -> Unit)? = null,
 )
 
-private sealed interface HomeBlock {
+internal sealed interface HomeBlock {
     data object QuickActions : HomeBlock
     data class Collections(
         val title: String,
@@ -355,16 +364,20 @@ private sealed interface HomeBlock {
 fun MeloXHomeScreen(
     source: MusicSource = MusicSource.Netease,
     onOpenTool: (String) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     if (source == MusicSource.Netease) {
-        NeteaseHomeDataScreen(onOpenTool)
+        NeteaseHomeDataScreen(onOpenTool, onOpenSettings)
     } else {
-        ProviderHomeDataScreen(source, onOpenTool)
+        ProviderHomeDataScreen(source, onOpenTool, onOpenSettings)
     }
 }
 
 @Composable
-private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
+private fun NeteaseHomeDataScreen(
+    onOpenTool: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     val onDetailSelected = rememberMeloXDetailSelection()
     val hostContext = LocalContext.current
     val context = LocalContext.current.applicationContext
@@ -568,6 +581,7 @@ private fun NeteaseHomeDataScreen(onOpenTool: (String) -> Unit) {
             refreshing = refreshing,
             error = error,
             onRefresh = { refresh(true) },
+            onOpenSettings = onOpenSettings,
             activeAction = activeAction,
             onQuickAction = quickAction@ { action ->
                 when (action) {
@@ -971,7 +985,11 @@ private fun HomeSongListDetail(
 }
 
 @Composable
-private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> Unit) {
+private fun ProviderHomeDataScreen(
+    source: MusicSource,
+    onOpenTool: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     val onDetailSelected = rememberMeloXDetailSelection()
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
@@ -1068,6 +1086,7 @@ private fun ProviderHomeDataScreen(source: MusicSource, onOpenTool: (String) -> 
                 refreshing = refreshing,
                 error = if (home == null) "${source.displayName} 暂未提供首页数据" else error,
                 onRefresh = ::refresh,
+                onOpenSettings = onOpenSettings,
                 activeAction = null,
                 onQuickAction = { action ->
                     when (action) {
@@ -1122,8 +1141,120 @@ private fun MeloXHomeLayout(
     selectedCollectionKey: String? = null,
     // 由 host 顶层 SharedTransitionLayout 传入；为空时卡片不做共享元素。
     sharedTransitionScope: SharedTransitionScope? = null,
+    onOpenSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    val sonifyAppearance = MeloXSettingsRuntime.pageAppearance == MeloXPageAppearance.Sonify
+    if (sonifyAppearance) {
+        val homeBlocks = blocks.orEmpty()
+        val localProvider = remember(context) { LocalProvider(context) }
+        var localLibraryTracks by remember { mutableStateOf(emptyList<com.lladlam.melox.core.music.model.MusicTrack>()) }
+        LaunchedEffect(localProvider) {
+            localLibraryTracks = runCatching {
+                withContext(Dispatchers.IO) {
+                    localProvider.aggregationTracks(page = 1, pageSize = 1000).items
+                }
+            }.getOrDefault(emptyList())
+        }
+        // Sonify's Home card shuffles the available library. In MeloX the
+        // available library is the active source's Home tracks plus any local
+        // tracks, so the card works for NetEase/QQ/KuGou/YouTube too.
+        val sourceHomeTracks = remember(homeBlocks) {
+            homeBlocks.filterIsInstance<HomeBlock.Tracks>()
+                .flatMap { block -> block.values.mapNotNull { it.toMusicTrack() } }
+        }
+        val recommendationCandidates = remember(sourceHomeTracks, localLibraryTracks) {
+            (sourceHomeTracks + localLibraryTracks).distinctBy { it.id }
+        }
+        LaunchedEffect(source, recommendationCandidates) {
+            if (blocks != null && recommendationCandidates.isNotEmpty()) {
+                SonifyHomeRecommendationStore.ensure(source.name, recommendationCandidates)
+            }
+        }
+        val recommendedTracks = SonifyHomeRecommendationStore.tracks
+        val sections = buildList {
+            if (recommendedTracks.isNotEmpty()) {
+                val queue = recommendedTracks.map { DiscoveryTrack.Provider(it) }
+                add(
+                    SonifyHomeSection.Recommend(
+                        title = "为你推荐",
+                        subtitle = "来自${source.displayName}",
+                        tracks = recommendedTracks,
+                        onPlay = { clicked, _ ->
+                            queue.firstOrNull { it.track.id == clicked.id }?.let { selected ->
+                                playDiscoveryQueue(context, queue, selected)
+                            }
+                        },
+                    ),
+                )
+            }
+            homeBlocks.forEach { block ->
+                when (block) {
+                    is HomeBlock.Tracks -> if (block.values.isNotEmpty()) {
+                        add(
+                            SonifyHomeSection.Songs(
+                                title = block.title,
+                                songs = block.values.map { it.toSearchSong() },
+                                onPlay = { index ->
+                                    block.values.getOrNull(index)?.let { track ->
+                                        playDiscoveryQueue(context, block.values, track)
+                                    }
+                                },
+                            ),
+                        )
+                    }
+
+                    is HomeBlock.Collections -> if (block.values.isNotEmpty()) {
+                        add(
+                            SonifyHomeSection.Collections(
+                                title = block.title,
+                                items = block.values.map { collection ->
+                                    SonifyHomeCollection(
+                                        key = collection.key,
+                                        title = collection.title,
+                                        subtitle = collection.creatorName
+                                            .takeIf { it.isNotBlank() }
+                                            ?: collection.description.orEmpty(),
+                                        artworkUrl = collection.artworkUrl,
+                                        onClick = { onCollection(collection) },
+                                    )
+                                },
+                            ),
+                        )
+                    }
+
+                    is HomeBlock.Podcasts -> if (block.values.isNotEmpty()) {
+                        add(
+                            SonifyHomeSection.Podcasts(
+                                title = "播客",
+                                items = block.values.map { podcast ->
+                                    SonifyHomePodcast(
+                                        key = "podcast-${podcast.programId ?: podcast.id}",
+                                        title = podcast.name,
+                                        artworkUrl = podcast.artworkUrl,
+                                        onClick = {
+                                            podcast.programId?.let {
+                                                MeloXCollectionDetailActivity.launchPodcastProgram(context, it)
+                                            } ?: MeloXCollectionDetailActivity.launchPodcast(context, podcast.id)
+                                        },
+                                    )
+                                },
+                            ),
+                        )
+                    }
+
+                    HomeBlock.QuickActions -> Unit
+                }
+            }
+        }
+        SonifyHomePage(
+            sections = sections,
+            refreshing = refreshing,
+            onRefresh = onRefresh,
+            accountContent = { account?.let { HomeAccountButton(it) } },
+        )
+        return
+    }
     val exploreListState = rememberLazyListState()
     // ⚠ 2026-09-29：状态栏避让从「容器 `statusBarsPadding()`」改成「滚动容器的顶部
     //   contentPadding」。原来 padding 打在 LazyColumn 的 modifier 上 ⇒ 列表视口
@@ -1140,42 +1271,66 @@ private fun MeloXHomeLayout(
                 modifier = Modifier
                     .fillMaxSize()
                     .meloXEdgeOverscrollHaptic(exploreListState),
-                contentPadding = PaddingValues(top = 18.dp + statusBarTop, bottom = 146.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp),
+                contentPadding = PaddingValues(
+                    top = if (sonifyAppearance) 10.dp + statusBarTop else 18.dp + statusBarTop,
+                    bottom = 146.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (sonifyAppearance) 26.dp else 22.dp),
             ) {
                 item {
-                    MeloXIosTopBar(
-                        title = stringResource(R.string.tab_home),
-                        contentPadding = PaddingValues(horizontal = 20.dp),
-                        actions = {
+                    if (sonifyAppearance) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.tab_home),
+                                fontSize = 40.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = (-1.2).sp,
+                            )
+                            Spacer(Modifier.weight(1f))
                             account?.let { HomeAccountButton(it) }
-                        },
-                    )
+                        }
+                    } else {
+                        MeloXIosTopBar(
+                            title = stringResource(R.string.tab_home),
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            actions = {
+                                account?.let { HomeAccountButton(it) }
+                            },
+                        )
+                    }
                 }
-                item {
-                    Text(
-                        text = stringResource(R.string.home_greeting),
-                        modifier = Modifier.padding(horizontal = 20.dp),
-                        style = MeloXTypography.headline,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
-                    )
+                if (!sonifyAppearance) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.home_greeting),
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                            style = MeloXTypography.headline,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.58f),
+                        )
+                    }
                 }
                 blocks.forEach { block ->
                     when (block) {
                         HomeBlock.QuickActions -> item { HomeQuickActions(source, activeAction, onQuickAction) }
                         is HomeBlock.Collections -> {
-                            item { SectionTitle(block.title, block.trailing, Modifier.padding(horizontal = 20.dp)) }
+                            item { SectionTitle(block.title, block.trailing, Modifier.padding(horizontal = if (sonifyAppearance) 24.dp else 20.dp), large = sonifyAppearance) }
                             item {
                                 CollectionRow(
                                     values = block.values,
                                     onSelect = onCollection,
                                     selectedCollectionKey = selectedCollectionKey,
                                     sharedTransitionScope = sharedTransitionScope,
+                                    large = sonifyAppearance,
                                 )
                             }
                         }
                         is HomeBlock.Tracks -> {
-                            item { SectionTitle(block.title, block.trailing, Modifier.padding(horizontal = 20.dp)) }
+                            item { SectionTitle(block.title, block.trailing, Modifier.padding(horizontal = if (sonifyAppearance) 24.dp else 20.dp), large = sonifyAppearance) }
                             item { ThreeLineSongCarousel(block.values) { track -> playDiscoveryQueue(context, block.values, track) } }
                         }
                         is HomeBlock.Podcasts -> item {
@@ -1265,7 +1420,7 @@ private data class HomeQuickAction(
 )
 
 @Composable
-private fun HomeQuickActions(source: MusicSource, active: String?, perform: (String) -> Unit) {
+internal fun HomeQuickActions(source: MusicSource, active: String?, perform: (String) -> Unit) {
     val actions = buildList {
         if (source == MusicSource.Netease) {
             add(HomeQuickAction("每日推荐", stringResource(R.string.home_action_daily), stringResource(R.string.home_eyebrow_daily), stringResource(R.string.home_subtitle_daily), MeloXSymbol.Calendar, listOf(Color(0xFFFF5B8A), Color(0xFFFF3147))))
@@ -1434,26 +1589,38 @@ private fun NeteaseExploreDataScreen() {
             if (exploreRecede.value == target) return@LaunchedEffect
             exploreRecede.animateTo(target, MeloXPageSpec)
         }
-        MeloXExploreLayout(
-            modifier = Modifier.fillMaxSize().meloXPageRecede { exploreRecede.value },
-            categories = visibleCategories,
-            category = category,
-            onCategory = { category = it },
-            collections = collections,
-            refreshing = refreshing,
-            error = error,
-            onRefresh = ::refresh,
-            showPodcast = category == "播客",
-            onCollection = {
-                onDetailSelected()
-                // 立即写入，不排队：退场途中再点卡时由 MeloXInterruptiblePage 的弹簧在途改向
-                // （继承当前位移与速度），点下去即响应 —— 这正是「退出后能立刻点击」。
-                selectedCollection = it
-                overlayCollection = it
-            },
-            selectedCollectionKey = selectedCollection?.key,
-            sharedTransitionScope = sharedScope,
-        )
+        if (MeloXSettingsRuntime.pageAppearance == MeloXPageAppearance.Sonify) {
+            SonifyExploreFeed(
+                categories = visibleCategories.filterNot { it == "播客" },
+                load = { client.explorePlaylists(it) },
+                onCollection = {
+                    onDetailSelected()
+                    selectedCollection = it
+                    overlayCollection = it
+                },
+            )
+        } else {
+            MeloXExploreLayout(
+                modifier = Modifier.fillMaxSize().meloXPageRecede { exploreRecede.value },
+                categories = visibleCategories,
+                category = category,
+                onCategory = { category = it },
+                collections = collections,
+                refreshing = refreshing,
+                error = error,
+                onRefresh = ::refresh,
+                showPodcast = category == "播客",
+                onCollection = {
+                    onDetailSelected()
+                    // 立即写入，不排队：退场途中再点卡时由 MeloXInterruptiblePage 的弹簧在途改向
+                    // （继承当前位移与速度），点下去即响应 —— 这正是「退出后能立刻点击」。
+                    selectedCollection = it
+                    overlayCollection = it
+                },
+                selectedCollectionKey = selectedCollection?.key,
+                sharedTransitionScope = sharedScope,
+            )
+        }
         HomeOverlayPage(
             shown = selectedCollection != null,
             // ⚠ 返回同步清空「隐藏集合」：卡片立即可见 ⇒ morph 落点有目标（不破坏一镜到底）。
@@ -1782,11 +1949,21 @@ private fun LargeTitle(text: String, modifier: Modifier = Modifier) = Text(
 )
 
 @Composable
-private fun SectionTitle(title: String, trailing: String, modifier: Modifier = Modifier) = Row(
+private fun SectionTitle(
+    title: String,
+    trailing: String,
+    modifier: Modifier = Modifier,
+    large: Boolean = false,
+) = Row(
     modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
 ) {
-    Text(title, style = MeloXTypography.title2)
+    if (large) {
+        Text(title, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+    } else {
+        Text(title, style = MeloXTypography.title2)
+    }
     Text(trailing, color = MaterialTheme.colorScheme.onBackground.copy(alpha = .42f), fontSize = 13.sp)
 }
 
@@ -1859,10 +2036,11 @@ private fun CollectionRow(
     onSelect: (DiscoveryCollection) -> Unit,
     selectedCollectionKey: String? = null,
     sharedTransitionScope: SharedTransitionScope? = null,
+    large: Boolean = false,
 ) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(horizontal = if (large) 24.dp else 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (large) 16.dp else 14.dp),
     ) {
             itemsIndexed(values, key = { _, value -> value.key }) { index, collection ->
                 // ⚠⚠⚠ 占位尺寸（宽 + 高）必须打在 `AnimatedVisibility` **外面这一层**（空的 `Box`），
@@ -1874,22 +2052,29 @@ private fun CollectionRow(
             //   + 8 内边距，即两行标题时也够、播放量不再溢出；详见 `CollectionCard`）。⚠ 宽按首卡 246
             //   / 其余 174 区分（与旧布局一致）；高用固定 254 占位，不**硬填** `CollectionCard` 的
             //   内容高度（标题 `maxLines=2` 行数不固定，硬填会裁字）。
+            val cardWidth = when {
+                large -> 278.dp
+                index == 0 -> 246.dp
+                else -> 174.dp
+            }
+            val cardHeight = if (large) 320.dp else 254.dp
             Box(
                 Modifier
                     .animateItem()
-                    .size(if (index == 0) 246.dp else 174.dp, 254.dp),
+                    .size(cardWidth, cardHeight),
             ) {
                 DiscoveryCardVisibility(
                     collection = collection,
                     selectedCollectionKey = selectedCollectionKey,
-                    modifier = Modifier.size(if (index == 0) 246.dp else 174.dp, 254.dp),
+                    modifier = Modifier.size(cardWidth, cardHeight),
                 ) {
-                        CollectionCard(
-                            value = collection,
-                            modifier = Modifier,
-                            onClick = { onSelect(collection) },
+                    CollectionCard(
+                        value = collection,
+                        modifier = Modifier,
+                        onClick = { onSelect(collection) },
                         sharedTransitionScope = sharedTransitionScope,
                         animatedVisibilityScope = this,
+                        large = large,
                     )
                 }
             }
@@ -2019,6 +2204,7 @@ private fun CollectionCard(
     onClick: () -> Unit,
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    large: Boolean = false,
 ) {
     Column(
         modifier
@@ -2027,7 +2213,7 @@ private fun CollectionCard(
             .fillMaxHeight()
             .padding(8.dp),
     ) {
-        val artworkShape = RoundedCornerShape(14.dp)
+        val artworkShape = RoundedCornerShape(if (large) 20.dp else 14.dp)
         // Keep the card visually complete while remote artwork is loading.
         // Without a stable surface, the fixed image slot becomes a blank hole
         // and the title appears detached from its card on slower networks.
@@ -2039,7 +2225,7 @@ private fun CollectionCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(174.dp),
+                .height(if (large) 228.dp else 174.dp),
         ) {
             AsyncImage(
                 value.artworkUrl,
@@ -2065,8 +2251,8 @@ private fun CollectionCard(
                 modifier = Modifier.padding(top = 7.dp),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                fontSize = 15.sp,
-                lineHeight = 19.sp,
+                fontSize = if (large) 17.sp else 15.sp,
+                lineHeight = if (large) 22.sp else 19.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.weight(1f))

@@ -407,22 +407,34 @@ private fun AdaptiveActivityPage(
     val progress = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var closing by remember { mutableStateOf(false) }
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
     val close: () -> Unit = {
         if (!closing) {
             closing = true
-            scope.launch {
-                progress.animateTo(1f, tween(160))
-                onBack()
-            }
+            shown = false
         }
     }
-    MeloXInterruptiblePage(visible = true, retreatProgress = { progress.value }) {
+    // The content below owns predictive back; leaving onBack unset avoids the
+    // same back gesture being handled twice (which caused a full-screen flash
+    // after the page had already been dragged off-screen).
+    MeloXInterruptiblePage(
+        visible = shown,
+        retreatProgress = { progress.value },
+        onBack = null,
+    ) {
+        val settled = transition.currentState == transition.targetState
+        LaunchedEffect(shown, settled) {
+            if (!shown && settled) onBack()
+        }
         PredictiveBackHandler(enabled = isTopPage && !closing) { events ->
             try {
                 events.collect { progress.snapTo(it.progress) }
                 closing = true
-                progress.animateTo(1f, tween(160))
-                onBack()
+                // Do not reset progress here: the page is already following the
+                // finger. Resetting it to 0 before the exit transition was the
+                // cause of the page flashing back to fullscreen on release.
+                shown = false
             } catch (error: CancellationException) {
                 closing = false
                 progress.animateTo(0f, tween(180))

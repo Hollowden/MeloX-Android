@@ -202,6 +202,7 @@ import com.lladlam.melox.ui.player.MeloXIOSMiniPlayer
 import com.lladlam.melox.ui.player.MeloXProviderLyricsLoader
 import com.lladlam.melox.ui.player.MeloXIOSNowPlayingSharedHost
 import com.lladlam.melox.ui.player.MeloXFlowingLightBackdropPrewarm
+import com.lladlam.melox.ui.settings.MeloXPageAppearance
 import com.lladlam.melox.ui.settings.MeloXPlayerBackgroundMode
 import com.lladlam.melox.ui.player.meloXPlayerRecedeSpec
 import com.lladlam.melox.ui.player.meloXPlayerTweenDurationMillis
@@ -265,6 +266,7 @@ enum class AppTab(@StringRes val titleRes: Int) {
 @Composable
 fun MeloXApp(
     openNowPlayingRequest: Int = 0,
+    openRecognitionRequest: Int = 0,
     clipboardLinkRequest: String? = null,
     onClipboardLinkConsumed: () -> Unit = {},
     playbackConnectionEnabled: Boolean = true,
@@ -301,16 +303,15 @@ fun MeloXApp(
         selectedSourceId.builtIn?.let { selectedSource = it }
     }
     val initialTab = remember(context) {
-        runCatching {
-            AppTab.valueOf(
-                if (MeloXSettingsRuntime.rememberLastTab) {
-                    MeloXSettingsPreferences.string(context, "general_last_tab", MeloXSettingsRuntime.defaultTab)
-                } else MeloXSettingsRuntime.defaultTab,
-            )
-        }.getOrDefault(AppTab.Home)
+        // The explicitly selected launch page wins over the last-used tab.
+        runCatching { AppTab.valueOf(MeloXSettingsRuntime.defaultTab) }
+            .getOrDefault(AppTab.Home)
     }
     var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
     var recognitionVisible by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(openRecognitionRequest) {
+        if (openRecognitionRequest > 0) recognitionVisible = true
+    }
     fun launchNeteaseLogin(returnTab: AppTab) {
         detailPaneState.openLogin(hostContext) { selectedTab = returnTab }
     }
@@ -330,6 +331,12 @@ fun MeloXApp(
     var onboardingLoginRequested by rememberSaveable { mutableStateOf(false) }
     var onboardingPage by rememberSaveable {
         mutableStateOf(if (MeloXSettingsPreferences.boolean(context, "onboarding_completed", false)) -1 else 0)
+    }
+    var appearancePickerVisible by rememberSaveable {
+        mutableStateOf(
+            MeloXSettingsPreferences.boolean(context, "onboarding_completed", false) &&
+                !MeloXSettingsPreferences.boolean(context, "appearance_picker_completed", false),
+        )
     }
     var availableUpdate by remember { mutableStateOf<MeloXRelease?>(null) }
     val forcedUpdate by MeloXForcedUpdate.release.collectAsState()
@@ -1213,6 +1220,7 @@ fun MeloXApp(
                                      }
                                  }
                             },
+                            onOpenSettings = { selectedTab = AppTab.Settings },
                         )
                          AppTab.Explore -> if (selectedSourceId.builtIn == null) com.lladlam.melox.ui.provider.PluginSourcePage(selectedSourceId, "rankings") else if (selectedSource == MusicSource.Netease) MeloXExploreScreen() else ProviderExploreScreen(selectedSource)
                          AppTab.Library -> if (selectedSourceId.builtIn == null) com.lladlam.melox.ui.provider.PluginSourcePage(selectedSourceId, "library") else if (selectedSource == MusicSource.Netease) {
@@ -1221,6 +1229,8 @@ fun MeloXApp(
                                 playlistBackEnabled = !fullPlayerVisible && !libraryModalVisible,
                                 onModalVisibilityChanged = { libraryModalVisible = it },
                             onLogin = { launchNeteaseLogin(AppTab.Library) },
+                            onOpenSettings = { selectedTab = AppTab.Settings },
+                            onOpenPlayer = openPlayer,
                             )
                         } else {
                             ProviderLibraryScreen(selectedSource)
@@ -1321,7 +1331,13 @@ fun MeloXApp(
                 val chromeSplit = meloXUsesListDetail(constraints, MeloXSettingsRuntime.splitScreenEnabled)
                 // ⚠ 闸门也必须用**同一个** `chromeSplit`（不是 `listDetailMode`）：否则转屏那
                 //   几帧里底栏会被整体卸载再重挂，等于凭空闪一下。
-                if (detailPaneState.pages.isEmpty() || chromeSplit) CompositionLocalProvider(
+                val pageKeepsChrome = detailPaneState.pages.isNotEmpty() &&
+                    detailPaneState.pages.all { page ->
+                        val name = page.intent.component?.className
+                        name == "com.lladlam.melox.ui.collection.MeloXCollectionDetailActivity" ||
+                            name == "com.lladlam.melox.ui.song.MeloXSongWikiActivity"
+                    }
+                if (detailPaneState.pages.isEmpty() || chromeSplit || pageKeepsChrome) CompositionLocalProvider(
                 // ⚠ 底栏玻璃**恒**采样 bottomChromeBackdrop（底栏 / 迷你栏 / 搜索键 / 水珠统一）。
                 //   它的录制节点在**外层 recede Box** 上（`graphicsLayer` 之外，唯一一处平行层）：
                 //   **恒定挂载 + 每帧跟着转场进度重录**
@@ -1648,6 +1664,9 @@ fun MeloXApp(
             fun finishOnboarding() {
                 MeloXSettingsPreferences.setBoolean(context, "onboarding_completed", true)
                 onboardingPage = -1
+                if (!MeloXSettingsPreferences.boolean(context, "appearance_picker_completed", false)) {
+                    appearancePickerVisible = true
+                }
                 if (onboardingLoginRequested) launchNeteaseLogin(AppTab.Settings)
             }
             when (onboardingPage) {
@@ -1708,6 +1727,18 @@ fun MeloXApp(
                 )
             }
         }
+        if (onboardingPage < 0 && !cloudControlChoicePending && forcedUpdate == null && appearancePickerVisible) {
+            fun selectAppearance(appearance: MeloXPageAppearance) {
+                MeloXSettingsPreferences.setString(context, "page_appearance", appearance.name)
+                MeloXSettingsRuntime.pageAppearance = appearance
+                MeloXSettingsPreferences.setBoolean(context, "appearance_picker_completed", true)
+                appearancePickerVisible = false
+            }
+            MeloXAppearancePickerPage(
+                onSelectMeloX = { selectAppearance(MeloXPageAppearance.MeloX) },
+                onSelectAppleMusic = { selectAppearance(MeloXPageAppearance.Sonify) },
+            )
+        }
         if (onboardingPage < 0 && cloudControlChoicePending) {
             MeloXOnboardingCloudPage(
                 onReject = {
@@ -1723,7 +1754,8 @@ fun MeloXApp(
             )
         }
         availableUpdate?.takeIf {
-            forcedUpdate == null && onboardingPage < 0 && !cloudControlChoicePending && pendingRemoteNotice == null
+            forcedUpdate == null && onboardingPage < 0 && !cloudControlChoicePending &&
+                !appearancePickerVisible && pendingRemoteNotice == null
         }?.let { release ->
             MeloXUpdateDialog(
                 release = release,
@@ -1740,7 +1772,8 @@ fun MeloXApp(
             )
         }
         forcedUpdate?.takeIf {
-            onboardingPage < 0 && !cloudControlChoicePending && pendingRemoteNotice == null
+            onboardingPage < 0 && !cloudControlChoicePending &&
+                !appearancePickerVisible && pendingRemoteNotice == null
         }?.let { release ->
             MeloXUpdateDialog(
                 release = release,
@@ -1757,7 +1790,7 @@ fun MeloXApp(
             )
         }
         pendingRemoteNotice?.takeIf {
-            onboardingPage < 0 && !cloudControlChoicePending
+            onboardingPage < 0 && !cloudControlChoicePending && !appearancePickerVisible
         }?.let { notice ->
             LaunchedEffect(notice.id, notice.frequency) {
                 MeloXRemoteNoticeStore.markShown(context, notice)

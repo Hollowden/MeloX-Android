@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
 import android.app.Activity
+import android.media.projection.MediaProjectionManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -1521,6 +1522,14 @@ private fun PlaybackSettings(context: android.content.Context) {
         )
         SettingsToggleRow(
             context,
+            stringResource(R.string.settings_show_volume_slider),
+            "playback_show_volume_slider",
+            true,
+            stringResource(R.string.settings_show_volume_slider_note),
+            grouped = true,
+        )
+        SettingsToggleRow(
+            context,
             stringResource(R.string.settings_allow_other_apps),
             "playback_allow_other_apps",
             false,
@@ -1874,6 +1883,27 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
         )
     }
+    Text(
+        stringResource(R.string.settings_page_appearance),
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .48f),
+        modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
+    )
+    SettingsGlassGroup {
+        MeloXSettingsDropdown(
+            title = stringResource(R.string.settings_page_appearance),
+            selected = MeloXSettingsRuntime.pageAppearance,
+            items = listOf(
+                MeloXPageAppearance.MeloX to stringResource(R.string.settings_page_appearance_melox),
+                MeloXPageAppearance.Sonify to stringResource(R.string.settings_page_appearance_sonify),
+            ),
+            onSelected = {
+                MeloXSettingsPreferences.setString(context, "page_appearance", it.name)
+            },
+            grouped = true,
+        )
+    }
+    Spacer(Modifier.height(18.dp))
     LyricsStringChoiceSetting(
         context,
         stringResource(R.string.settings_player_shell),
@@ -2103,11 +2133,10 @@ private fun PlayerAppearanceSettings(context: android.content.Context) {
 @Composable
 private fun LyricsSettings(context: android.content.Context) {
     var lyricsStyle by remember { mutableStateOf(MeloXSettingsRuntime.lyricsStyle) }
-    // Only the Apple Music style is offered for now. Other renderers stay in the
-    // codebase; if one was selected before, move the stored preference back so
-    // the visible selector matches what is actually rendered.
+    // Eva/TextPV are kept in the codebase for compatibility, but the visible
+    // appearance picker exposes the MeloX and Sonify Apple Music renderers.
     LaunchedEffect(Unit) {
-        if (lyricsStyle != MeloXLyricsStyle.AppleMusic) {
+        if (lyricsStyle !in setOf(MeloXLyricsStyle.AppleMusic, MeloXLyricsStyle.SonifyAppleMusic)) {
             lyricsStyle = MeloXLyricsStyle.AppleMusic
             MeloXSettingsPreferences.setString(context, "lyrics_style", MeloXLyricsStyle.AppleMusic.name)
         }
@@ -2115,10 +2144,11 @@ private fun LyricsSettings(context: android.content.Context) {
     // Group 1: 歌词样式-歌词渲染质量-逐字歌词-普通LRC-点击跳转-长按分享-间奏倒计时-自动跟随-手动滚动恢复-减弱动画
     SettingsGlassGroup {
         MeloXSettingsDropdown(
-            title = stringResource(R.string.settings_lyrics_style),
+            title = stringResource(R.string.settings_lyrics_appearance),
             selected = lyricsStyle,
             items = listOf(
-                MeloXLyricsStyle.AppleMusic to stringResource(R.string.settings_apple_music),
+                MeloXLyricsStyle.AppleMusic to stringResource(R.string.settings_lyrics_appearance_melox),
+                MeloXLyricsStyle.SonifyAppleMusic to stringResource(R.string.settings_lyrics_appearance_apple_music),
             ),
             onSelected = { lyricsStyle = it; MeloXSettingsPreferences.setString(context, "lyrics_style", it.name) },
             grouped = true,
@@ -2136,6 +2166,14 @@ private fun LyricsSettings(context: android.content.Context) {
         )
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_auto_select), "lyrics_auto_select", true, grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_word_by_word), "lyrics_word_by_word", true, grouped = true)
+        SettingsToggleRow(
+            context,
+            stringResource(R.string.settings_lyrics_recognition_fallback),
+            "lyrics_recognition_fallback",
+            false,
+            stringResource(R.string.settings_lyrics_recognition_fallback_note),
+            grouped = true,
+        )
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_pseudo_timing), "lyrics_pseudo_timing", false, stringResource(R.string.settings_lyrics_pseudo_timing_note), grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_qq_bracket_backing), "lyrics_qq_bracket_backing", false, stringResource(R.string.settings_lyrics_qq_bracket_backing_note), grouped = true)
         SettingsToggleRow(context, stringResource(R.string.settings_lyrics_tap_seek), "lyrics_tap_seek", true, grouped = true)
@@ -3224,6 +3262,22 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 @Composable
+private fun SettingsOrderButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(40.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        MeloXActionIcon(
+            text,
+            Modifier.size(18.dp),
+            MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else .25f),
+        )
+    }
+}
+
+@Composable
 private fun TabLayoutSettings(context: android.content.Context) {
     SettingsGlassGroup {
         SettingsToggleRow(context, stringResource(R.string.settings_tabs_home), "tab_home", true, grouped = true)
@@ -3250,14 +3304,14 @@ private fun TabLayoutSettings(context: android.content.Context) {
         order.forEachIndexed { index, page ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(when (page) { "Home" -> stringResource(R.string.settings_tabs_home); "Explore" -> stringResource(R.string.settings_tabs_explore); "Library" -> stringResource(R.string.settings_tabs_library); "Podcasts" -> stringResource(R.string.settings_tabs_podcasts); "Downloads" -> stringResource(R.string.settings_tabs_downloads); "Cloud" -> stringResource(R.string.settings_tabs_cloud); else -> stringResource(R.string.settings_tabs_settings) }, Modifier.weight(1f))
-                MeloXActionIcon("↑", Modifier.size(18.dp).clickable(enabled = index > 0) {
+                SettingsOrderButton("↑", index > 0) {
                     order = order.toMutableList().apply { add(index - 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "tab_order", order.joinToString(","))
-                }.padding(10.dp), MaterialTheme.colorScheme.primary.copy(alpha = if (index > 0) 1f else .25f))
-                MeloXActionIcon("↓", Modifier.size(18.dp).clickable(enabled = index < order.lastIndex) {
+                }
+                SettingsOrderButton("↓", index < order.lastIndex) {
                     order = order.toMutableList().apply { add(index + 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "tab_order", order.joinToString(","))
-                }.padding(10.dp), MaterialTheme.colorScheme.primary.copy(alpha = if (index < order.lastIndex) 1f else .25f))
+                }
             }
         }
     }
@@ -3272,14 +3326,14 @@ private fun TabLayoutSettings(context: android.content.Context) {
         homeOrder.forEachIndexed { index, section ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(when (section) { "QuickActions" -> stringResource(R.string.settings_tabs_shortcuts); "Playlists" -> stringResource(R.string.settings_tabs_playlists); else -> stringResource(R.string.settings_tabs_new_songs) }, Modifier.weight(1f))
-                MeloXActionIcon("↑", Modifier.size(18.dp).clickable(enabled = index > 0) {
+                SettingsOrderButton("↑", index > 0) {
                     homeOrder = homeOrder.toMutableList().apply { add(index - 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "home_section_order", homeOrder.joinToString(","))
-                }.padding(10.dp), MaterialTheme.colorScheme.primary.copy(alpha = if (index > 0) 1f else .25f))
-                MeloXActionIcon("↓", Modifier.size(18.dp).clickable(enabled = index < homeOrder.lastIndex) {
+                }
+                SettingsOrderButton("↓", index < homeOrder.lastIndex) {
                     homeOrder = homeOrder.toMutableList().apply { add(index + 1, removeAt(index)) }
                     MeloXSettingsPreferences.setString(context, "home_section_order", homeOrder.joinToString(","))
-                }.padding(10.dp), MaterialTheme.colorScheme.primary.copy(alpha = if (index < homeOrder.lastIndex) 1f else .25f))
+                }
             }
         }
     }
@@ -3430,7 +3484,11 @@ private fun GeneralSettings(context: android.content.Context) {
                 "Library" to stringResource(R.string.settings_tabs_library),
                 "Settings" to stringResource(R.string.settings_tabs_settings),
             ),
-            onSelected = { defaultTab = it; MeloXSettingsPreferences.setString(context, "general_default_tab", it) },
+            onSelected = {
+                defaultTab = it
+                MeloXSettingsPreferences.setString(context, "general_default_tab", it)
+                MeloXSettingsPreferences.setString(context, "general_last_tab", it)
+            },
             grouped = true,
         )
         SettingsToggleRow(context, stringResource(R.string.settings_general_remember_tab), "general_remember_tab", true, grouped = true)
@@ -3573,10 +3631,57 @@ fun MeloXRecognitionPanel(context: android.content.Context) {
         }
     }
 
+    var pendingProjection by remember { mutableStateOf(false) }
+    fun startSystemCapture(resultCode: Int, data: android.content.Intent) {
+        recognitionJob?.cancel()
+        recognitionJob = scope.launch {
+            working = true
+            error = null
+            results = emptyList()
+            status = "正在捕获系统播放音频…"
+            try {
+                val found = client.recognizePlayback(resultCode, data, duration)
+                results = found
+                status = if (found.isEmpty()) "没有识别到歌曲，请重试" else "识别完成"
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                status = "已停止"
+            } catch (failure: Throwable) {
+                error = failure.message ?: "系统音频识别失败"
+                status = "无法完成识别"
+            } finally {
+                working = false
+            }
+        }
+    }
+    val projectionManager = remember(context) {
+        context.getSystemService(MediaProjectionManager::class.java)
+    }
+    val projectionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            startSystemCapture(result.resultCode, data)
+        } else {
+            error = "没有获得屏幕录制授权"
+        }
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) startCapture() else error = "没有麦克风权限；请在系统设置中允许 MeloX 使用麦克风。"
+        if (!granted) {
+            error = "没有麦克风权限；请在系统设置中允许 MeloX 使用麦克风。"
+            pendingProjection = false
+        } else if (pendingProjection) {
+            pendingProjection = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && projectionManager != null) {
+                projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+            } else {
+                error = "系统音频识别需要 Android 10 或更高版本"
+            }
+        } else {
+            startCapture()
+        }
     }
 
     Spacer(Modifier.height(14.dp))
@@ -3597,9 +3702,29 @@ fun MeloXRecognitionPanel(context: android.content.Context) {
         } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startCapture()
         } else {
+            pendingProjection = false
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+    Spacer(Modifier.height(8.dp))
+    SettingsActionButton("使用系统音频识别（录屏）") {
+        if (working) {
+            recognitionJob?.cancel()
+        } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || projectionManager == null) {
+            error = "系统音频识别需要 Android 10 或更高版本"
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+        } else {
+            pendingProjection = true
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    Text(
+        "使用系统音频识别时会请求录屏授权，不会保存录屏内容。",
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .46f),
+        fontSize = 12.sp,
+    )
     Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         if (working) {
             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -3825,41 +3950,19 @@ private fun AboutSettings(context: android.content.Context) {
             )
             Text(hotText("about.maintainer", stringResource(R.string.settings_about_maintainer)), modifier = Modifier.padding(top=14.dp), fontWeight=FontWeight.SemiBold)
             Text(hotText("about.upstream", stringResource(R.string.settings_about_upstream)), modifier = Modifier.padding(top=5.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha=.58f))
-            }
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsGlassGroup {
-        Column(Modifier.padding(16.dp)) {
             Text(
-                stringResource(R.string.settings_about_sponsors_title),
-                fontSize = 15.sp,
+                "Sonify",
+                modifier = Modifier.padding(top = 14.dp),
                 fontWeight = FontWeight.SemiBold,
             )
-            listOf(
-                stringResource(R.string.settings_about_sponsor_26d40) to stringResource(R.string.settings_about_sponsor_amount_50),
-                stringResource(R.string.settings_about_sponsor_aec4c) to stringResource(R.string.settings_about_sponsor_amount_6),
-                stringResource(R.string.settings_about_sponsor_bai) to stringResource(R.string.settings_about_sponsor_amount_5),
-                stringResource(R.string.settings_about_sponsor_zhongmo) to stringResource(R.string.settings_about_sponsor_amount_8_88),
-                stringResource(R.string.settings_about_sponsor_361ef) to stringResource(R.string.settings_about_sponsor_amount_20),
-                stringResource(R.string.settings_about_sponsor_f8b67) to stringResource(R.string.settings_about_sponsor_amount_12_24),
-                stringResource(R.string.settings_about_sponsor_qingfeng) to stringResource(R.string.settings_about_sponsor_amount_18),
-            ).forEach { (name, amount) ->
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(name, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .78f))
-                    Text(amount, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .52f), fontSize = 13.sp)
-                }
-            }
             Text(
-                stringResource(R.string.settings_about_sponsors_note),
-                modifier = Modifier.padding(top = 12.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .46f),
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
+                "首页、音乐库、歌手页及部分界面组件来自 Sonify 开源项目（GPL-3.0）：https://github.com/XiaoZhi0729/Sonify",
+                modifier = Modifier.padding(top = 5.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
             )
+            }
         }
     }
     if (showCatEgg) {
@@ -4106,10 +4209,6 @@ private fun AboutSettings(context: android.content.Context) {
     Spacer(Modifier.height(10.dp))
     SettingsActionButton(stringResource(R.string.settings_about_qq_group)) {
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/wbhFQxj7mo"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_sponsor)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ifdian.net/a/lladlam"))) }
     }
     Spacer(Modifier.height(10.dp))
     SettingsActionButton(stringResource(R.string.settings_about_view_logs)) {

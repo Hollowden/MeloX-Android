@@ -1,6 +1,8 @@
 package com.lladlam.melox.ui.player
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import com.lladlam.melox.core.account.NeteaseSessionStore
@@ -20,13 +22,19 @@ import com.lladlam.melox.core.lyrics.AmlldbLyricsClient
 import com.lladlam.melox.core.lyrics.BoundLyricSource
 import com.lladlam.melox.core.lyrics.LyricBinding
 import com.lladlam.melox.core.lyrics.LyricBindingStore
+import com.lladlam.melox.core.lyrics.LyricRecognitionStore
+import com.lladlam.melox.core.lyrics.RecognizedLyricTrack
+import com.lladlam.melox.core.model.SearchSong
 import com.lladlam.melox.core.music.model.MusicAlbumRef
 import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicResourceId
+import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicSource
+import com.lladlam.melox.core.music.model.PlaybackResolution
 import com.lladlam.melox.core.music.model.MusicTrack
 import com.lladlam.melox.core.music.provider.LyricsCapability
 import com.lladlam.melox.core.music.provider.MeloXMusicProviders
+import com.lladlam.melox.core.music.provider.PlaybackCapability
 import com.lladlam.melox.core.music.provider.SearchCapability
 import com.lladlam.melox.core.provider.bilibili.BilibiliLyricAlignment
 import com.lladlam.melox.core.provider.bilibili.BilibiliLyricSourceResult
@@ -35,6 +43,7 @@ import com.lladlam.melox.core.provider.bilibili.BilibiliPlaybackAssociation
 import com.lladlam.melox.core.provider.bilibili.BilibiliPlaybackAssociationStore
 import com.lladlam.melox.core.provider.bilibili.BilibiliProvider
 import com.lladlam.melox.core.provider.local.LocalMusicRepository
+import com.lladlam.melox.core.recognition.SongRecognitionClient
 import com.lladlam.melox.playback.LxUserPlaybackResolver
 import com.lladlam.melox.core.network.NeteaseSearchClient
 import com.lladlam.melox.playback.PlaybackTrackIdentity
@@ -50,6 +59,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
+import kotlin.random.Random
+import okhttp3.Request
+import java.io.File
 import com.lladlam.melox.ui.settings.MeloXSettingsRuntime
 import com.lladlam.melox.ui.settings.MeloXSettingsPreferences
 
@@ -108,6 +121,8 @@ internal object MeloXProviderLyricsLoader {
     private val lock = Any()
     private val inFlight = mutableMapOf<String, Deferred<LyricsDocument>>()
     private var preloadJob: Job? = null
+    private val recognitionInFlight = mutableSetOf<String>()
+
     private val cache = object : LinkedHashMap<String, LyricsDocument>(MaxCachedDocuments, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LyricsDocument>?): Boolean =
             size > MaxCachedDocuments
@@ -303,6 +318,11 @@ internal object MeloXProviderLyricsLoader {
             Log.w("MeloXLyricsAuto", "Lyrics load timed out for $cacheKey")
             throw java.io.IOException("歌词加载超时")
         }
+        if (document.lines.isEmpty() && onUpgrade != null &&
+            MeloXSettingsPreferences.boolean(appContext, "lyrics_recognition_fallback", false)
+        ) {
+            scheduleRecognitionFallback(appContext, cacheKey, snapshot, onUpgrade)
+        }
         if (onUpgrade != null) {
             val trackKey = "${snapshot.resourceId.sourceId.value}:${snapshot.resourceId.value}"
             // A timeline generated on an earlier visit is reused with no model
@@ -330,6 +350,314 @@ internal object MeloXProviderLyricsLoader {
      * generation. Every failure (no model, no cached audio, infeasible
      * alignment) simply leaves the line-timed document on screen.
      */
+    /**
+     * Last-resort lyrics lookup: when every provider/search returned nothing,
+     * sample two random 3-second windows while the track is playing, run the
+     * NetEase fingerprint recognizer, then use the recognized NetEase id to
+     * fetch lyrics. This is intentionally asynchronous: the empty lyric page
+     * is shown immediately, and [onUpgrade] supplies the result when ready.
+     */
+    private suspend fun scheduleRecognitionFallback(
+        appContext: Context,
+        cacheKey: String,
+        snapshot: LyricTrackSnapshot,
+        onUpgrade: (LyricsDocument) -> Unit,
+    ) {
+        val trackKey = "${snapshot.resourceId.sourceId.value}:${snapshot.resourceId.value}"
+        synchronized(lock) {
+            if (!recognitionInFlight.add(trackKey)) return
+        }
+        workerScope.launch {
+            var tempFile: File? = null
+            try {
+                val stored = LyricRecognitionStore.read(appContext, snapshot.resourceId)
+                val storedDurationMismatch = stored != null &&
+                    stored.durationMs > 0L &&
+                    snapshot.durationMs > 0L &&
+                    abs(stored.durationMs - snapshot.durationMs) >
+                        maxOf(30_000L, snapshot.durationMs / 5L)
+                if (stored != null && autoSyncIsCurrent(trackKey)) {
+                    Log.i(
+                        "MeloXLyricsRecognition",
+                        "persisted id=${stored.neteaseId} name=${stored.title} artist=${stored.artists} " +
+                            "duration=${stored.durationMs} audio=${snapshot.durationMs} mismatch=$storedDurationMismatch",
+                    )
+                    val storedDocument = if (storedDurationMismatch) null else resolveRecognizedLyrics(
+                        appContext,
+                        stored.toSearchSong(),
+                        snapshot,
+                    )
+                    if (storedDocument != null) {
+                        val processed = LyricTimelineProcessor.process(storedDocument)
+                            .withoutPlaceholderLyrics()
+                            .copy(recognitionFallback = true)
+                        if (processed.lines.size > 2) {
+                            remember(cacheKey, processed)
+                            Log.i(
+                                "MeloXLyricsRecognition",
+                                "applied persisted lyrics lines=${processed.lines.size}",
+                            )
+                            withContext(Dispatchers.Main.immediate) { onUpgrade(scripted(processed)) }
+                            return@launch
+                        }
+                    }
+                }
+                val prepared = prepareRecognitionAudio(appContext, snapshot)
+                    ?: return@launch
+                val uri = prepared.uri
+                tempFile = prepared.file
+                val audioDurationMs = prepared.durationMs.coerceAtLeast(snapshot.durationMs)
+                Log.i("MeloXLyricsRecognition", "decoded audio duration=${audioDurationMs}ms")
+                val client = SongRecognitionClient(appContext)
+                val recognized = mutableListOf<SearchSong>()
+                try {
+                    // Two independent random 3-second windows from the actual
+                    // audio file. Nothing is recorded through the microphone.
+                    repeat(2) { attempt ->
+                        if (autoSyncIsCurrent(trackKey).not()) return@launch
+                        val maxStart = (audioDurationMs - 3_000L).coerceAtLeast(0L)
+                        val start = if (maxStart > 0L) Random.nextLong(0L, maxStart + 1L) else 0L
+                        Log.i(
+                            "MeloXLyricsRecognition",
+                            "segment ${attempt + 1} start=${start}ms duration=3000ms",
+                        )
+                        val threeSecond = runCatching {
+                            client.recognizeLocalAt(uri, audioDurationMs, start, seconds = 3)
+                        }
+                            .onFailure { Log.w("MeloXLyricsRecognition", "segment ${attempt + 1} 3s failed: ${it.message}") }
+                            .getOrDefault(emptyList())
+                        Log.i(
+                            "MeloXLyricsRecognition",
+                            "segment ${attempt + 1} 3s results=${threeSecond.size} " +
+                                threeSecond.joinToString { "${it.song.name}/${it.song.id}" },
+                        )
+                        if (threeSecond.isNotEmpty()) {
+                            threeSecond.mapTo(recognized) { it.song }
+                        } else {
+                            // Covers/remixes often need more than a 3-second
+                            // fingerprint. Retry the same window with 9 seconds.
+                            val nineStart = start.coerceAtMost((snapshot.durationMs - 9_000L).coerceAtLeast(0L))
+                            val nineSecond = runCatching {
+                                client.recognizeLocalAt(uri, snapshot.durationMs, nineStart, seconds = 9)
+                            }
+                                .onFailure { Log.w("MeloXLyricsRecognition", "segment ${attempt + 1} 9s failed: ${it.message}") }
+                                .getOrDefault(emptyList())
+                            Log.i(
+                                "MeloXLyricsRecognition",
+                                "segment ${attempt + 1} 9s fallback results=${nineSecond.size} " +
+                                    nineSecond.joinToString { "${it.song.name}/${it.song.id}" },
+                            )
+                            nineSecond.mapTo(recognized) { it.song }
+                        }
+                    }
+                } finally {
+                    client.close()
+                }
+                val song = recognized
+                    .groupingBy { it.id }
+                    .eachCount()
+                    .maxByOrNull { it.value }
+                    ?.key
+                    ?.let { id -> recognized.firstOrNull { it.id == id } }
+                    ?: return@launch
+                Log.i(
+                    "MeloXLyricsRecognition",
+                    "recognized id=${song.id} name=${song.name} artist=${song.artists}",
+                )
+                LyricRecognitionStore.write(
+                    appContext,
+                    snapshot.resourceId,
+                    RecognizedLyricTrack(
+                        neteaseId = song.id,
+                        title = song.name,
+                        artists = song.artists,
+                        album = song.album,
+                        artworkUrl = song.artworkUrl,
+                        durationMs = song.durationMs,
+                    ),
+                )
+                val document = resolveRecognizedLyrics(appContext, song, snapshot)
+                    ?: return@launch
+                val processed = LyricTimelineProcessor.process(document)
+                    .withoutPlaceholderLyrics()
+                    .copy(recognitionFallback = true)
+                if (processed.lines.isEmpty()) return@launch
+                if (autoSyncIsCurrent(trackKey).not()) return@launch
+                remember(cacheKey, processed)
+                Log.i(
+                    "MeloXLyricsRecognition",
+                    "applied recognized lyrics lines=${processed.lines.size}",
+                )
+                withContext(Dispatchers.Main.immediate) { onUpgrade(scripted(processed)) }
+            } finally {
+                tempFile?.delete()
+                synchronized(lock) { recognitionInFlight.remove(trackKey) }
+            }
+        }
+    }
+
+    private suspend fun autoSyncIsCurrent(trackKey: String): Boolean =
+        com.lladlam.melox.core.autosync.AutoSyncPlaybackBridge.isCurrentTrack?.invoke(trackKey) != false
+
+    /**
+     * Local tracks are already files. Streaming tracks are resolved through the
+     * active provider and downloaded once to a temporary cache file so both
+     * random segments come from the exact same audio.
+     */
+    private data class PreparedRecognitionAudio(
+        val uri: Uri,
+        val file: File?,
+        val durationMs: Long,
+    )
+
+    private suspend fun prepareRecognitionAudio(
+        appContext: Context,
+        snapshot: LyricTrackSnapshot,
+    ): PreparedRecognitionAudio? {
+        if (snapshot.resourceId.sourceId.builtIn == MusicSource.Local) {
+            val record = LocalMusicRepository(appContext).track(snapshot.resourceId.value) ?: return null
+            val uri = Uri.parse(record.contentUri)
+            return PreparedRecognitionAudio(
+                uri = uri,
+                file = null,
+                durationMs = mediaDurationMs(appContext, uri).takeIf { it > 0L } ?: record.durationMs,
+            )
+        }
+        val provider = runCatching {
+            MeloXMusicProviders.create(appContext).require(
+                snapshot.resourceId.sourceId.builtIn ?: return null,
+            )
+        }.getOrNull() as? PlaybackCapability ?: return null
+        val track = MusicTrack(
+            id = snapshot.resourceId,
+            title = snapshot.title,
+            artists = listOf(MusicArtistRef(name = snapshot.artist.ifBlank { "未知歌手" })),
+            album = snapshot.album.takeIf(String::isNotBlank)?.let { MusicAlbumRef(name = it, artworkUrl = snapshot.artworkUrl) },
+            artworkUrl = snapshot.artworkUrl,
+            durationMs = snapshot.durationMs.takeIf { it > 0L },
+        )
+        val resolution = runCatching {
+            provider.resolvePlayback(track, AudioQualityTier.Standard)
+        }.getOrNull() ?: return null
+        val url = when (resolution) {
+            is PlaybackResolution.Playable -> resolution.url to resolution.requestHeaders
+            is PlaybackResolution.Preview -> resolution.url to emptyMap()
+            else -> return null
+        }
+        val file = File.createTempFile("melox-lyric-recognition-", ".audio", appContext.cacheDir)
+        val request = Request.Builder().url(url.first).apply {
+            url.second.forEach { (name, value) -> header(name, value) }
+        }.get().build()
+        val downloaded = runCatching {
+            com.lladlam.melox.core.network.MeloXHttpClient.shared.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("audio HTTP ${response.code}")
+                val body = response.body ?: error("audio response body empty")
+                body.byteStream().use { input ->
+                    file.outputStream().use { output -> input.copyTo(output, bufferSize = 64 * 1024) }
+                }
+            }
+            file
+        }.onFailure {
+            file.delete()
+            Log.w("MeloXLyricsRecognition", "audio download failed: ${it.message}")
+        }.getOrNull() ?: return null
+        val uri = Uri.fromFile(downloaded)
+        Log.i("MeloXLyricsRecognition", "audio file=${downloaded.length()} bytes")
+        return PreparedRecognitionAudio(
+            uri = uri,
+            file = downloaded,
+            durationMs = mediaDurationMs(appContext, uri).takeIf { it > 0L } ?: snapshot.durationMs,
+        )
+    }
+
+    private fun mediaDurationMs(context: Context, uri: Uri): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+                ?: 0L
+        } catch (_: Throwable) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private suspend fun resolveRecognizedLyrics(
+        appContext: Context,
+        song: SearchSong,
+        snapshot: LyricTrackSnapshot,
+    ): LyricsDocument? {
+        val registry = MeloXMusicProviders.create(appContext)
+        val amllDocument = runCatching {
+            AmlldbLyricsClient().lyrics(song.id, snapshot.preference)
+        }.onFailure {
+            Log.w("MeloXLyricsRecognition", "AMLL lookup failed: ${it.message}")
+        }.getOrNull()?.takeIf { it.lines.isNotEmpty() }
+        val qqDocument = runCatching {
+            val qq = registry.require(MusicSource.QQMusic)
+            val search = qq as? SearchCapability
+            val lyrics = qq as? LyricsCapability
+            if (search == null || lyrics == null) return@runCatching null
+            val query = listOf(song.name, song.artists)
+                .filter(String::isNotBlank)
+                .joinToString(" ")
+            val requestedTitle = BilibiliLyricAlignment.normalize(song.name)
+            val requestedArtist = BilibiliLyricAlignment.normalize(song.artists)
+            val matches = search.searchSongs(query, 1, 12).items
+            val track = matches.firstOrNull { candidate ->
+                val title = BilibiliLyricAlignment.normalize(candidate.title)
+                val artist = BilibiliLyricAlignment.normalize(candidate.artistText)
+                requestedTitle.isNotBlank() &&
+                    (title.contains(requestedTitle) || requestedTitle.contains(title)) &&
+                    (requestedArtist.isBlank() ||
+                        artist.contains(requestedArtist) ||
+                        requestedArtist.contains(artist))
+            } ?: matches.firstOrNull { candidate ->
+                BilibiliLyricAlignment.normalize(candidate.title).contains(requestedTitle)
+            }
+            Log.i(
+                "MeloXLyricsRecognition",
+                "QQ query=$query matches=${matches.size} selected=${track?.title}",
+            )
+            track?.let { lyrics.lyrics(it).takeIf { doc -> doc.lines.isNotEmpty() } }
+        }.onFailure {
+            Log.w("MeloXLyricsRecognition", "QQ lookup failed: ${it.message}")
+        }.getOrNull()
+        val neteaseDocument = runCatching {
+            val provider = registry.require(MusicSource.Netease)
+            (provider as? LyricsCapability)?.lyrics(song.asNeteaseTrack())
+        }.onFailure {
+            Log.w("MeloXLyricsRecognition", "NetEase lookup failed: ${it.message}")
+        }.getOrNull()?.takeIf { it.lines.isNotEmpty() }
+        val selectedDocument = selectAutomaticLyrics(
+            listOfNotNull(
+                amllDocument?.let { AutoLyricCandidate(0, it) },
+                qqDocument?.let { AutoLyricCandidate(1, it) },
+                neteaseDocument?.let { AutoLyricCandidate(2, it) },
+            ),
+        ) ?: return null
+        Log.i(
+            "MeloXLyricsRecognition",
+            "sources amll=${amllDocument?.lines?.size ?: 0} " +
+                "qq=${qqDocument?.lines?.size ?: 0} " +
+                "netease=${neteaseDocument?.lines?.size ?: 0} " +
+                "selected=${selectedDocument.source.name}",
+        )
+        return selectedDocument
+    }
+
+    private fun SearchSong.asNeteaseTrack(): MusicTrack = MusicTrack(
+        id = MusicResourceId(MusicSource.Netease, id.toString()),
+        title = name,
+        artists = listOf(MusicArtistRef(name = artists)),
+        album = album.takeIf(String::isNotBlank)?.let { MusicAlbumRef(name = it, artworkUrl = artworkUrl) },
+        artworkUrl = artworkUrl,
+        durationMs = durationMs.takeIf { it > 0L },
+    )
+
     private fun scheduleAutoSyncUpgrade(
         appContext: Context,
         cacheKey: String,
@@ -550,6 +878,17 @@ internal object MeloXProviderLyricsLoader {
         val neteaseTrackResult = async {
             findBilibiliLyricCatalogTrack(neteaseSearch, focusedCandidates)
         }
+        // QQ/AMLL can both miss a cover/remix (QRC errors, no AMLL record) even
+        // when a safe NetEase catalog identity was already found. Keep NetEase
+        // line-timed lyrics as a real primary fallback instead of returning
+        // "primary=none" and showing an empty lyric page.
+        val neteasePrimaryResult = async {
+            val track = neteaseTrackResult.await() ?: return@async null
+            runCatching { neteaseLyrics.lyrics(track) }
+                .onFailure { Log.w("MeloXBilibiliLyrics", "NetEase primary lyric failed: ${it.message}") }
+                .getOrNull()?.takeIf { it.lines.isNotEmpty() }
+                ?.let { BilibiliLyricSourceResult("netease", it, track) }
+        }
         val amllResult = async {
             val track = neteaseTrackResult.await() ?: return@async null
             val id = track.id.value.toLongOrNull() ?: return@async null
@@ -560,7 +899,8 @@ internal object MeloXProviderLyricsLoader {
         }
         val qq = qqResult.await()
         val amll = amllResult.await()
-        val primaryResults = listOfNotNull(amll, qq)
+        val neteasePrimary = neteasePrimaryResult.await()
+        val primaryResults = listOfNotNull(amll, qq, neteasePrimary)
         val primaryDocument = selectAutomaticLyrics(
             primaryResults.mapIndexed { priority, result -> AutoLyricCandidate(priority, result.document) },
         )
