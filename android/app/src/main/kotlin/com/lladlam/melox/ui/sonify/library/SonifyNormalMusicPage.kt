@@ -47,6 +47,7 @@ import com.lladlam.melox.ui.sonify.withNight
 import kotlinx.coroutines.launch
 
 private enum class SonifySongSort {
+    Default,
     Name,
     Artist,
     Duration,
@@ -65,10 +66,21 @@ internal fun SonifyNormalMusicPage(
     onRefresh: (() -> Unit)? = null,
     refreshing: Boolean = false,
     onRetry: (() -> Unit)? = null,
+    enableLocalMatch: Boolean = false,
 ) {
+    val sortContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val sortPrefs = remember(sortContext) {
+        sortContext.getSharedPreferences("melox_sonify_sort_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    val prefKeyPrefix = remember(title) { "normal_music_${title.hashCode()}" }
     var searchText by rememberSaveable(title) { mutableStateOf("") }
-    var sortOrdinal by rememberSaveable(title) { mutableIntStateOf(SonifySongSort.Name.ordinal) }
-    var descending by rememberSaveable(title) { mutableStateOf(false) }
+    var sortOrdinal by remember(title) {
+        mutableIntStateOf(sortPrefs.getInt("${prefKeyPrefix}_sort", SonifySongSort.Default.ordinal))
+    }
+    var descending by remember(title) {
+        mutableStateOf(sortPrefs.getBoolean("${prefKeyPrefix}_desc", false))
+    }
+    var showLocalMatch by remember(title) { mutableStateOf(false) }
 
     val filtered = remember(songs, searchText) {
         if (searchText.isBlank()) songs else songs.filter { song ->
@@ -79,6 +91,12 @@ internal fun SonifyNormalMusicPage(
     }
     val indexed = remember(filtered, sortOrdinal, descending, searchText) {
         when (sortOrdinal) {
+            SonifySongSort.Default.ordinal -> com.lladlam.melox.ui.sonify.IndexedListResult(
+                if (descending) filtered.asReversed() else filtered,
+                emptyList(),
+                emptyList(),
+            )
+
             SonifySongSort.Artist.ordinal -> sonifyAlphabetIndex(
                 items = filtered,
                 descending = descending,
@@ -150,10 +168,21 @@ internal fun SonifyNormalMusicPage(
         rightBarIcon = {
             SonifyLibrarySortMenuButton(
                 selectedSort = { sortOrdinal },
-                onSelectSort = { sortOrdinal = it },
+                onSelectSort = {
+                    sortOrdinal = it
+                    sortPrefs.edit().putInt("${prefKeyPrefix}_sort", it).apply()
+                },
                 descending = { descending },
-                onSelectDescending = { descending = it },
+                onSelectDescending = {
+                    descending = it
+                    sortPrefs.edit().putBoolean("${prefKeyPrefix}_desc", it).apply()
+                },
                 supportsSongCount = false,
+                leadingAction = if (enableLocalMatch && songs.isNotEmpty()) {
+                    SonifyMenuAction("匹配本地歌曲") { showLocalMatch = true }
+                } else {
+                    null
+                },
             )
         },
         indexBarLabels = indexed.labels,
@@ -223,5 +252,13 @@ internal fun SonifyNormalMusicPage(
                 )
             }
         }
+    }
+    if (enableLocalMatch) {
+        com.lladlam.melox.ui.library.MeloXPlaylistLocalMatchSheet(
+            playlistName = title,
+            songs = songs,
+            visible = showLocalMatch,
+            onDismiss = { showLocalMatch = false },
+        )
     }
 }

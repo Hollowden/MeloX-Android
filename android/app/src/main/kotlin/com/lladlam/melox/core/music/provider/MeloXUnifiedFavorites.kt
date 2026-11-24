@@ -101,7 +101,8 @@ object MeloXUnifiedFavorites {
         val updated = if (favorite) {
             val index = current.indexOfFirst { sameSong(it, track) }
             if (index < 0) {
-                current + track
+                // 新收藏置顶，与网易云「我喜欢的音乐」保持最新在最上、老歌在最下。
+                listOf(track) + current
             } else {
                 current.toMutableList().also { list ->
                     // A later add from another source is an explicit choice:
@@ -150,8 +151,16 @@ object MeloXUnifiedFavorites {
                         failures += Failure(source, error.message ?: "${source.displayName} 收藏读取失败")
                     }
             }
-            val merged = TrackAggregation.aggregate(existing + migrated)
-                .mapNotNull { it.recommendation?.track }
+            // 按原歌单出现顺序合并去重（保留最新收藏在最上），不再用 TrackAggregation 按音质总分打乱原顺序。
+            val merged = mutableListOf<MusicTrack>()
+            (existing + migrated).forEach { track ->
+                val idx = merged.indexOfFirst { sameSong(it, track) }
+                if (idx < 0) {
+                    merged += track
+                } else if (qualityRank(track) > qualityRank(merged[idx])) {
+                    merged[idx] = track
+                }
+            }
             writeTracks(app, merged, notify = false)
             prefs(app).edit()
                 .putBoolean(KeyInitialized, true)

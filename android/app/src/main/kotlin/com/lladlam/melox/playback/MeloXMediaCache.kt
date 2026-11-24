@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import com.lladlam.melox.core.music.model.MusicSource
 import java.io.File
 
 /** Process-wide bounded playback cache used by Media3 for replay and seeking. */
@@ -25,6 +27,18 @@ object MeloXMediaCache {
     fun clear(context: Context) {
         val active = get(context)
         active.keys.toList().forEach(active::removeResource)
+    }
+
+    internal fun playbackKey(spec: DataSpec): String {
+        val key = spec.key ?: spec.uri.toString()
+        return if (ProviderPlaybackResolver.isProviderTrackUri(spec.uri) &&
+            spec.uri.pathSegments.firstOrNull() == MusicSource.Kuwo.storageValue
+        ) {
+            // Older builds could cache Kuwo's short spoken notices as full tracks.
+            "kuwo-duration-checked:$key"
+        } else {
+            key
+        }
     }
 
     fun limitBytes(context: Context): Long {

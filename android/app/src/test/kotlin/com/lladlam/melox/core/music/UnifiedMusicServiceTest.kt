@@ -1,6 +1,7 @@
 package com.lladlam.melox.core.music
 
 import com.lladlam.melox.core.music.model.MusicPage
+import com.lladlam.melox.core.music.model.MusicArtistRef
 import com.lladlam.melox.core.music.model.MusicResourceId
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
@@ -112,30 +113,52 @@ class UnifiedMusicServiceTest {
     }
 
     @Test
+    fun aggregateRankingPrioritizesExactSongAndArtistWithoutLosingSource() {
+        val netease = SourceId.fromBuiltIn(MusicSource.Netease)
+        val qq = SourceId.fromBuiltIn(MusicSource.QQMusic)
+        val cover = MusicTrack(
+            MusicResourceId(netease, "cover"), "人间共鸣（翻唱）", listOf(MusicArtistRef(name = "其他歌手")),
+        )
+        val sameTitle = MusicTrack(
+            MusicResourceId(netease, "same-title"), "人间共鸣", listOf(MusicArtistRef(name = "其他歌手")),
+        )
+        val original = MusicTrack(
+            MusicResourceId(qq, "original"), "人间共鸣", listOf(MusicArtistRef(name = "李健")),
+        )
+        val result = UnifiedMusicService.SearchResult(
+            tracks = listOf(cover, sameTitle, original),
+            pages = mapOf(netease to MusicPage(listOf(cover, sameTitle), 1, 25), qq to MusicPage(listOf(original), 1, 25)),
+        )
+
+        assertEquals(listOf(original, sameTitle, cover), result.interleavedTracks(netease, "人间共鸣"))
+        assertEquals(listOf(original, cover, sameTitle), result.interleavedTracks(netease, "李健　人间共鸣"))
+    }
+
+    @Test
     fun limitedProviderCoolsDownWhileOtherProvidersStillSearch() = runBlocking {
         val goodCalls = mutableListOf<MusicSource>()
         var limitedCalls = 0
         val limited = object : MusicProvider, SearchCapability {
-            override val source = MusicSource.QQMusic
+            override val source = MusicSource.Netease
             override val displayName = source.displayName
             override val capabilities = setOf(MusicCapability.Search)
             override suspend fun searchSongs(query: String, page: Int, pageSize: Int): MusicPage<MusicTrack> {
                 limitedCalls++
-                error("QQ音乐请求失败：HTTP 429")
+                error("网易云请求失败（405）：操作频繁，请稍候再试")
             }
         }
         val service = UnifiedMusicService(MusicProviderRegistry(listOf(
             limited,
             FakeSearchProvider(MusicSource.Kuwo, goodCalls),
         )))
-        val sources = setOf(MusicSource.QQMusic, MusicSource.Kuwo)
+        val sources = setOf(MusicSource.Netease, MusicSource.Kuwo)
         service.searchSongs("红尘客栈", sources)
         val result = service.searchSongs("梦想启动", sources)
 
         assertEquals(1, limitedCalls)
         assertEquals(2, goodCalls.size)
         assertEquals(MusicSource.Kuwo, result.tracks.single().id.source)
-        assertEquals(MusicSource.QQMusic, result.failures.single().source)
+        assertEquals(MusicSource.Netease, result.failures.single().source)
     }
 
     private class FakeSearchProvider(

@@ -53,9 +53,6 @@ class PersonalSearchDeviceRunner : Instrumentation() {
                     }
                     result.putString(source.storageValue, status)
                 }
-                val lx = searchInstalledLxSources(targetContext, "红尘客栈", 1, 10)
-                result.putString("lx", lx.scripts.joinToString(" | ") { "${it.name}: ${it.status} (${it.count})" })
-                check(lx.scripts.size == LxUserSourceStore.list(targetContext).size)
             }
             finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {

@@ -43,6 +43,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -596,9 +597,15 @@ private fun MeloXQualityChipV3(
         }
     }
 
+    val localBinding = remember(state.mediaId, com.lladlam.melox.core.provider.local.LocalTrackBindingStore.revision.collectAsState().value) {
+        com.lladlam.melox.core.provider.local.LocalTrackBindingStore.activeBindingForMediaId(context, state.mediaId)
+    }
     val displayQuality = actual ?: selected
-    val displayTitle = fallbackSource?.let { "${it.displayName} · ${displayQuality.title}" }
-        ?: displayQuality.title
+    val displayTitle = when {
+        localBinding != null -> "本地 · ${localBinding.formatBadge()}"
+        fallbackSource != null -> "${fallbackSource!!.displayName} · ${displayQuality.title}"
+        else -> displayQuality.title
+    }
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(

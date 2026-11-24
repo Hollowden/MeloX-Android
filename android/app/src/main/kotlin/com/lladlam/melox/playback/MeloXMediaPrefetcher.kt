@@ -75,7 +75,7 @@ internal class MeloXMediaPrefetcher(
     }
 
     fun remove(mediaItem: MediaItem) {
-        cache.removeResource(dataSpec(mediaItem).key ?: dataSpec(mediaItem).uri.toString())
+        cache.removeResource(MeloXMediaCache.playbackKey(dataSpec(mediaItem)))
     }
 
     private fun dataSpec(mediaItem: MediaItem): DataSpec {
@@ -91,7 +91,9 @@ internal class MeloXMediaPrefetcher(
 
     private fun analysisFile(mediaItem: MediaItem): File {
         val configuration = requireNotNull(mediaItem.localConfiguration)
-        val identity = "${mediaItem.mediaId}|${configuration.uri}|${configuration.customCacheKey.orEmpty()}"
+        val spec = dataSpec(mediaItem)
+        val cacheNamespace = MeloXMediaCache.playbackKey(spec).takeUnless { it == spec.key }.orEmpty()
+        val identity = "${mediaItem.mediaId}|${configuration.uri}|${configuration.customCacheKey.orEmpty()}$cacheNamespace"
         return File(analysisDirectory, "${identity.hashCode().toUInt().toString(16)}.media")
     }
 

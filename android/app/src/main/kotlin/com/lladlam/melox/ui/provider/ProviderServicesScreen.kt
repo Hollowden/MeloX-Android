@@ -130,6 +130,15 @@ fun ProviderServicesScreen(
     var localStateRevision by remember { mutableIntStateOf(0) }
     var localScanBusy by remember { mutableStateOf(false) }
     var localScanMessage by remember { mutableStateOf<String?>(null) }
+    var showAllLocalBindings by remember { mutableStateOf(false) }
+    var boundLocalCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        com.lladlam.melox.core.provider.local.LocalTrackBindingStore.revision.collect {
+            boundLocalCount = withContext(Dispatchers.IO) {
+                com.lladlam.melox.core.provider.local.LocalTrackBindingStore.activeCount(context)
+            }
+        }
+    }
     val scope = rememberCoroutineScope()
     val localScanner = remember(context) { LocalMediaScanner(context, localRepository) }
     fun scanLocalMusic() {
@@ -381,6 +390,13 @@ fun ProviderServicesScreen(
                     onClick = { localTreeLauncher.launch(null) },
                     showTopSeparator = true,
                 )
+                MeloXIosListRow(
+                    title = "歌单本地绑定管理",
+                    subtitle = "已生效绑定 $boundLocalCount 首（播放歌单时优先直通本地文件）",
+                    leading = { MeloXSymbolIcon(MeloXSymbol.Check, Modifier.size(24.dp), MeloXSystemColors.Red) },
+                    onClick = { showAllLocalBindings = true },
+                    showTopSeparator = true,
+                )
                 localScanMessage?.let { message ->
                     MeloXIosListRow(
                         title = message,
@@ -409,6 +425,10 @@ fun ProviderServicesScreen(
             }
             Spacer(Modifier.size(24.dp))
         }
+        com.lladlam.melox.ui.library.MeloXAllLocalBindingsSheet(
+            visible = showAllLocalBindings,
+            onDismiss = { showAllLocalBindings = false },
+        )
         ServicesSectionLabel(stringResource(R.string.provider_third_party))
         MeloXIosGroupedList(surfaceColor = MaterialTheme.colorScheme.surface) {
             MeloXIosListRow(

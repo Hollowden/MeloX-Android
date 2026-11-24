@@ -92,6 +92,7 @@ internal fun SonifyOnlinePlaylistDetailPage(
     var descending by remember(target) { mutableStateOf(false) }
     var subscribeBusy by remember(target) { mutableStateOf(false) }
     var actionMessage by remember(target) { mutableStateOf<String?>(null) }
+    var showLocalMatch by remember(target) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val search = rememberSonifyPageSearch(resetKey = target.summary.id)
     BackHandler(enabled = search.expanded) { search.dismiss() }
@@ -336,8 +337,20 @@ internal fun SonifyOnlinePlaylistDetailPage(
                         onSelectDescending = { descending = it },
                         leadingActionText = subscribeActionText,
                         onLeadingAction = onSubscribeAction,
+                        extraActions = if (songs.isNotEmpty()) {
+                            listOf("匹配本地歌曲" to { showLocalMatch = true })
+                        } else {
+                            emptyList()
+                        },
                     )
                 },
+            )
+
+            com.lladlam.melox.ui.library.MeloXPlaylistLocalMatchSheet(
+                playlistName = data?.name ?: target.summary.name,
+                songs = songs,
+                visible = showLocalMatch,
+                onDismiss = { showLocalMatch = false },
             )
 
             if (alphabet.labels.isNotEmpty()) {

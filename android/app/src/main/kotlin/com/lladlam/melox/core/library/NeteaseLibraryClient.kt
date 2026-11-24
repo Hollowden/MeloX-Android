@@ -103,23 +103,19 @@ class NeteaseLibraryClient(
         val likedPlaylistId = likedPlaylist?.id ?: allPlaylists.firstOrNull()?.id
         val playlists = allPlaylists
         var likedIds = likedSongIdsBlocking(userId)
-        var likedById = songDetailsPaged(likedIds).associateBy(SearchSong::id)
-        // ⚠ 2026-11-15 用户报「网易云 660 首，MeloX 659 首」，缺的那首是用 MeloX 「添加到歌单」
-        //   写进「我喜欢的音乐」的。like/get 与收藏歌单在服务端可能不同步，只读 like/get 会
-        //   永远少一首；song/detail 静默丢 id 也会造成同样的缺口。发现歌单自报的 trackCount
-        //   对不上（或详情少解析）时，直接回读歌单自身的 trackIds/tracks 补齐。
-        //   只有出现缺口才会多发这一次 playlist/detail，正常账号零额外请求。
-        if (likedPlaylist != null && needsLikedPlaylistBackfill(
-                likedTrackCount = likedPlaylist.trackCount,
-                likeIds = likedIds,
-                resolvedDetails = likedById.size,
-            )
-        ) {
+        // 始终优先采用「我喜欢的音乐」歌单自身的 trackIds 顺序（最新收藏在最上面，与网易云官方一致），
+        // 再用 song/like/get 兜底补齐可能缺失的条目，避免 song/like/get 返回乱序或倒序。
+        var likedById: Map<Long, SearchSong> = emptyMap()
+        if (likedPlaylist != null) {
             val base = runCatching { fetchPlaylistBase(likedPlaylist.id) }.getOrNull()
             if (base != null) {
                 likedIds = mergeLikedSongIds(likedIds, base.desiredIds)
-                likedById = likedById + base.byId
+                likedById = base.byId
             }
+        }
+        val unresolvedIds = likedIds.filterNot { it in likedById }
+        if (unresolvedIds.isNotEmpty()) {
+            likedById = likedById + songDetailsPaged(unresolvedIds).associateBy(SearchSong::id)
         }
         // 任一 id 在 song/detail 里被静默丢掉都算「丢歌」。瞬态空响应可小批重试；
         // 使用与首轮相同的受控并发，避免收藏较多时补漏退化为几十次串行往返。

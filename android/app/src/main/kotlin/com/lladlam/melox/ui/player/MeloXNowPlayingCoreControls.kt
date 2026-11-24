@@ -36,6 +36,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -507,13 +508,21 @@ private fun SceneQualityChip(
         }
     }
 
+    val localBinding = remember(state.mediaId, com.lladlam.melox.core.provider.local.LocalTrackBindingStore.revision.collectAsState().value) {
+        com.lladlam.melox.core.provider.local.LocalTrackBindingStore.activeBindingForMediaId(context, state.mediaId)
+    }
     val qualityTitle = when {
+        localBinding != null -> localBinding.formatBadge()
         downloadedQuality != null -> downloadedQuality.title
         identity?.sourceId?.builtIn == MusicSource.Netease -> (neteaseActual ?: selected).title
         providerActual != null -> providerActual!!.sceneTitle()
         else -> selected.title
     }
-    val displayTitle = fallbackSource?.let { "${it.displayName} · $qualityTitle" } ?: qualityTitle
+    val displayTitle = when {
+        localBinding != null -> "本地 · $qualityTitle"
+        fallbackSource != null -> "${fallbackSource!!.displayName} · $qualityTitle"
+        else -> qualityTitle
+    }
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(

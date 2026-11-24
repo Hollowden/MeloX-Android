@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,8 +57,16 @@ internal fun SonifyPlaylistsPage(
     loading: Boolean = false,
     error: String? = null,
 ) {
-    var sortOrdinal by rememberSaveable { mutableIntStateOf(SonifyLibrarySort.Default.ordinal) }
-    var descending by rememberSaveable { mutableStateOf(false) }
+    val appContext = LocalContext.current.applicationContext
+    val sortPrefs = remember(appContext) {
+        appContext.getSharedPreferences("melox_sonify_sort_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    var sortOrdinal by remember {
+        mutableIntStateOf(sortPrefs.getInt("playlists_sort", SonifyLibrarySort.Default.ordinal))
+    }
+    var descending by remember {
+        mutableStateOf(sortPrefs.getBoolean("playlists_desc", false))
+    }
     val indexed = remember(playlists, sortOrdinal, descending) {
         sonifySortAndIndex(
             items = playlists,
@@ -100,9 +109,15 @@ internal fun SonifyPlaylistsPage(
         rightBarIcon = {
             SonifyLibrarySortMenuButton(
                 selectedSort = { sortOrdinal },
-                onSelectSort = { sortOrdinal = it },
+                onSelectSort = {
+                    sortOrdinal = it
+                    sortPrefs.edit().putInt("playlists_sort", it).apply()
+                },
                 descending = { descending },
-                onSelectDescending = { descending = it },
+                onSelectDescending = {
+                    descending = it
+                    sortPrefs.edit().putBoolean("playlists_desc", it).apply()
+                },
             )
         },
         onRefresh = onRefresh,

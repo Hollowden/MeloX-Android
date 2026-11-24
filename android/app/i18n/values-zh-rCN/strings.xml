@@ -774,11 +774,7 @@
     <string name="search_browse">浏览类别</string>
     <string name="search_source_hint">搜索 %1$s 的歌曲、歌单、专辑或歌手</string>
     <string name="search_source_all">全部音源</string>
-    <string name="search_source_lx">洛雪音源</string>
     <string name="search_enable_multiple_sources">多音源搜索</string>
-    <string name="search_lx_loading">正在搜索洛雪音源…</string>
-    <string name="search_lx_failed">洛雪音源搜索失败：%1$s</string>
-    <string name="search_lx_no_playback_match">在已选择的曲库里找不到同一首歌</string>
     <string name="search_no_songs">没有找到歌曲</string>
     <string name="search_download_local">下载到本机</string>
     <string name="search_no_results">没有找到内容</string>
@@ -1623,10 +1619,4 @@
     <string name="settings_mcp_copied">Token 已复制</string>
     <string name="settings_mcp_failed">MCP 启动失败：%1$s</string>
     <string name="search_select_sources">选择搜索平台</string>
-    <string name="search_lx_named">洛雪 · %1$s</string>
-    <string name="search_lx_result_count">%1$d 条搜索结果</string>
-    <string name="search_lx_empty">这个关键词没有搜索结果</string>
-    <string name="search_lx_playback_only">提供播放解析，需在对应平台曲库中搜歌</string>
-    <string name="search_lx_request_failed">搜索接口请求失败</string>
-    <string name="search_lx_disabled">请在音乐服务中开启第三方音乐源</string>
 </resources>

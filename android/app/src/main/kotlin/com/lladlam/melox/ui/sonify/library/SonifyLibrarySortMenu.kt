@@ -197,6 +197,7 @@ internal fun SonifyDetailSortMenuButton(
     modifier: Modifier = Modifier,
     leadingActionText: String? = null,
     onLeadingAction: (() -> Unit)? = null,
+    extraActions: List<Pair<String, () -> Unit>> = emptyList(),
 ) {
     var expanded by remember { mutableStateOf(false) }
     var anchorBounds by remember { mutableStateOf<IntRect?>(null) }
@@ -236,6 +237,9 @@ internal fun SonifyDetailSortMenuButton(
                 items = buildList {
                     if (leadingActionText != null && onLeadingAction != null) {
                         add(MeloXGlassSelectionItem(leadingActionText, onClick = onLeadingAction))
+                    }
+                    extraActions.forEach { (label, action) ->
+                        add(MeloXGlassSelectionItem(label, onClick = action))
                     }
                     sortOptions.forEach { (ordinal, label) ->
                         add(MeloXGlassSelectionItem(label, checked = selectedSort == ordinal) {

@@ -60,7 +60,7 @@ object MeloXMusicProviders {
                 KugouProvider({ PlaybackAccountStore.kugouSession(appContext) }, httpClient),
                 liteProvider(appContext, httpClient),
                 QishuiProvider({ QishuiSessionStore.read(appContext) }, httpClient),
-                KuwoProvider({ PlaybackAccountStore.kuwoSession(appContext) }, httpClient),
+                KuwoProvider(appContext, { PlaybackAccountStore.kuwoSession(appContext) }, httpClient),
                 AppleMusicApiClient({ AppleMusicSessionStore.read(appContext) }, httpClient),
                 BilibiliProvider(
                     { BilibiliSessionStore.read(appContext) }, httpClient,
@@ -118,7 +118,7 @@ object MeloXMusicProviders {
                 KugouProvider({ KugouSessionStore.read(context) }, httpClient),
                 liteProvider(context, httpClient),
                 QishuiProvider({ QishuiSessionStore.read(context) }, httpClient),
-                KuwoProvider({ KuwoSessionStore.read(context) }, httpClient),
+                KuwoProvider(context, { KuwoSessionStore.read(context) }, httpClient),
                 AppleMusicApiClient(
                     sessionProvider = { AppleMusicSessionStore.read(context) },
                     httpClient = httpClient,

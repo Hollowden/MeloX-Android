@@ -95,13 +95,22 @@ class QQMusicCatalogClient(
         } catch (error: Exception) {
             null
         }
-        val desktopList = desktop?.optJSONObject("body")?.optJSONObject("song")?.optJSONArray("list")
-        val data = desktop?.takeIf { desktopList != null && desktopList.length() > 0 }
-            ?: searchMobile(query, safePage, safeSize)
-        val songBlock = data.optJSONObject("body")?.optJSONObject("song") ?: JSONObject()
-        val list = songBlock.optJSONArray("list")
-            ?: data.optJSONObject("body")?.optJSONArray("item_song") ?: JSONArray()
-        val tracks = buildList {
+        if (desktop != null) {
+            val tracks = searchTracksFrom(desktop)
+            if (tracks.isNotEmpty()) {
+                return MusicPage(tracks, safePage, safeSize, searchTotal(desktop))
+            }
+        }
+        val mobile = searchMobile(query, safePage, safeSize)
+        return MusicPage(searchTracksFrom(mobile), safePage, safeSize, searchTotal(mobile))
+    }
+
+    private fun searchTracksFrom(data: JSONObject): List<MusicTrack> {
+        val body = data.optJSONObject("body") ?: return emptyList()
+        val desktopItems = body.optJSONObject("song")?.optJSONArray("list")
+        val list = desktopItems?.takeIf { it.length() > 0 }
+            ?: body.optJSONArray("item_song") ?: return emptyList()
+        return buildList {
             for (index in 0 until list.length()) {
                 val item = list.optJSONObject(index) ?: continue
                 parseTrack(item, assumePlayable = true)?.let(::add)
@@ -111,12 +120,6 @@ class QQMusicCatalogClient(
                 }
             }
         }.distinctBy { it.id }
-        return MusicPage(
-            items = tracks,
-            page = safePage,
-            pageSize = safeSize,
-            total = searchTotal(data),
-        )
     }
 
     /** Anonymous Mobile protocol reference: WXRIW/Lyricify-Lyrics-Helper (Apache-2.0). */

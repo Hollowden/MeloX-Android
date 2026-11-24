@@ -107,6 +107,9 @@ internal fun MeloXQualitySelectionOverlay(
 
     BackHandler(enabled = visible, onBack = onDismiss)
 
+    val localBinding = remember(state.mediaId, visible) {
+        com.lladlam.melox.core.provider.local.LocalTrackBindingStore.activeBindingForMediaId(context, state.mediaId)
+    }
     val selected = downloadedQuality ?: MusicQualityPreferences.read(context)
     val actualQuality = when {
         downloadedQuality != null -> downloadedQuality
@@ -117,18 +120,26 @@ internal fun MeloXQualitySelectionOverlay(
         else -> selected
     }
     val sourceLabel = when {
+        localBinding != null -> "当前音源：本地绑定文件（${localBinding.localDisplayName ?: localBinding.localTitle.orEmpty()}）"
         downloadedQuality != null -> stringResource(R.string.player_quality_downloaded)
         fallbackSource != null -> stringResource(R.string.player_quality_actual_source, fallbackSource!!.displayName)
         source != MusicSource.Netease -> stringResource(R.string.player_quality_source, sourceId.displayName)
         else -> stringResource(R.string.player_quality_current_playback)
     }
-    val details = qualityDetails(
-        context = context,
-        resource = availability.resourceFor(actualQuality),
-        quality = actualQuality,
-        source = sourceId,
-        downloaded = downloadedQuality != null,
-    )
+    val details = if (localBinding != null) {
+        val sizeMb = localBinding.localSizeBytes.takeIf { it > 0L }?.let {
+            String.format(java.util.Locale.ROOT, "%.1f MB", it / (1024.0 * 1024.0))
+        }
+        listOfNotNull("本地直通 ${localBinding.formatBadge()}", sizeMb, "免流量 · 免缓存").joinToString(" · ")
+    } else {
+        qualityDetails(
+            context = context,
+            resource = availability.resourceFor(actualQuality),
+            quality = actualQuality,
+            source = sourceId,
+            downloaded = downloadedQuality != null,
+        )
+    }
 
     MeloXGlassDialog(
         visible = visible,
@@ -136,7 +147,11 @@ internal fun MeloXQualitySelectionOverlay(
     ) {
         Text(stringResource(R.string.player_quality_title), style = MaterialTheme.typography.titleLarge)
         Text(
-            text = stringResource(R.string.player_quality_current, actualQuality.title),
+            text = if (localBinding != null) {
+                "当前播放：本地 · ${localBinding.formatBadge()}"
+            } else {
+                stringResource(R.string.player_quality_current, actualQuality.title)
+            },
             modifier = Modifier.padding(top = 9.dp),
             color = foreground.copy(alpha = 0.68f),
             fontSize = 14.sp,

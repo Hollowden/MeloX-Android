@@ -4,6 +4,7 @@ import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
 import com.lladlam.melox.core.music.model.SourceId
 import com.lladlam.melox.core.music.model.MusicPage
+import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
@@ -38,15 +39,33 @@ class UnifiedMusicService(
         val aggregated: List<AggregatedTrack> = emptyList(),
         val pages: Map<SourceId, MusicPage<MusicTrack>> = emptyMap(),
     ) {
-        fun interleavedTracks(preferredSource: SourceId): List<MusicTrack> {
+        fun interleavedTracks(preferredSource: SourceId, query: String = ""): List<MusicTrack> {
             val lists = pages.entries.sortedBy { it.key != preferredSource }.map { it.value.items }
             val longest = lists.maxOfOrNull { it.size } ?: return emptyList()
-            return buildList {
+            val tracks = buildList {
                 repeat(longest) { index ->
                     lists.mapNotNullTo(this) { it.getOrNull(index) }
                 }
             }.distinctBy { it.id }
+            val keyword = normalizeSearchText(query)
+            if (keyword.isBlank()) return tracks
+            // Kotlin's stable sort keeps each platform's ranking among equally relevant matches.
+            return tracks.sortedByDescending { track ->
+                val title = normalizeSearchText(track.title)
+                when {
+                    title.isBlank() -> 0
+                    track.artists.any { artist ->
+                        val name = normalizeSearchText(artist.name)
+                        name.isNotBlank() && (keyword == title + name || keyword == name + title)
+                    } -> 2
+                    keyword == title -> 1
+                    else -> 0
+                }
+            }
         }
+
+        private fun normalizeSearchText(value: String): String =
+            Normalizer.normalize(value, Normalizer.Form.NFKC).lowercase().filter(Char::isLetterOrDigit)
     }
 
     suspend fun searchSongs(
@@ -113,7 +132,7 @@ class UnifiedMusicService(
 
     private companion object {
         val rateLimitMessage = Regex(
-            """\bHTTP\s+429\b|too many requests|访问(?:次数)?过多|次数过多|请求(?:过于)?频繁""",
+            """\bHTTP\s+429\b|too many requests|访问(?:次数)?过多|次数过多|(?:请求|操作)(?:过于)?频繁""",
             RegexOption.IGNORE_CASE,
         )
     }

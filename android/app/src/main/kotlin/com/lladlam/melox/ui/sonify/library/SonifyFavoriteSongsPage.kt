@@ -36,5 +36,6 @@ internal fun SonifyFavoriteSongsPage(
         onRefresh = onRefresh,
         refreshing = refreshing,
         onRetry = onRetry,
+        enableLocalMatch = true,
     )
 }

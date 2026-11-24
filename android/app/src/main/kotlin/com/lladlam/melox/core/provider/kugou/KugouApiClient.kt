@@ -42,6 +42,25 @@ class KugouApiClient(
         if (normalized.isBlank()) return MusicPage(emptyList(), safePage, safeSize, 0)
         val response = try {
             requests.get(
+                baseUrl = "https://songsearch.kugou.com",
+                path = "/song_search_v2",
+                params = mapOf(
+                    "keyword" to normalized,
+                    "page" to safePage.toString(),
+                    "pagesize" to safeSize.toString(),
+                    "userid" to "0",
+                    "clientver" to "",
+                    "platform" to "WebFilter",
+                    "filter" to "2",
+                    "iscorrection" to "1",
+                    "privilege_filter" to "0",
+                    "area_code" to "1",
+                ),
+                includeDefaults = false,
+                sign = false,
+            )
+        } catch (_: IOException) {
+            requests.get(
                 path = "/complexsearch/v3/search/song",
                 params = mapOf(
                     "userid" to "0",
@@ -71,25 +90,6 @@ class KugouApiClient(
                     "User-Agent" to "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1",
                 ),
                 includeDefaults = false,
-            )
-        } catch (_: IOException) {
-            requests.get(
-                baseUrl = "https://songsearch.kugou.com",
-                path = "/song_search_v2",
-                params = mapOf(
-                    "keyword" to normalized,
-                    "page" to safePage.toString(),
-                    "pagesize" to safeSize.toString(),
-                    "userid" to "0",
-                    "clientver" to "",
-                    "platform" to "WebFilter",
-                    "filter" to "2",
-                    "iscorrection" to "1",
-                    "privilege_filter" to "0",
-                    "area_code" to "1",
-                ),
-                includeDefaults = false,
-                sign = false,
             )
         }
         val data = response.optJSONObject("data") ?: response

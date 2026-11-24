@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import com.lladlam.melox.ui.sonify.Title
 import com.lladlam.melox.ui.sonify.rememberIndexScrollOffsetPx
@@ -67,8 +68,16 @@ internal fun SonifyOnlinePlaylistsPage(
     canDelete: (SonifyPlaylistTarget) -> Boolean = { false },
     onDelete: (suspend (SonifyPlaylistTarget) -> Result<Unit>)? = null,
 ) {
-    var sortOrdinal by rememberSaveable { mutableIntStateOf(SonifyLibrarySort.Name.ordinal) }
-    var descending by rememberSaveable { mutableStateOf(false) }
+    val appContext = LocalContext.current.applicationContext
+    val sortPrefs = remember(appContext) {
+        appContext.getSharedPreferences("melox_sonify_sort_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    var sortOrdinal by remember {
+        mutableIntStateOf(sortPrefs.getInt("online_playlists_sort", SonifyLibrarySort.Default.ordinal))
+    }
+    var descending by remember {
+        mutableStateOf(sortPrefs.getBoolean("online_playlists_desc", false))
+    }
     var showCreate by remember { mutableStateOf(false) }
     var createName by remember { mutableStateOf("") }
     var createBusy by remember { mutableStateOf(false) }
@@ -97,9 +106,15 @@ internal fun SonifyOnlinePlaylistsPage(
         rightBarIcon = {
             SonifyLibrarySortMenuButton(
                 selectedSort = { sortOrdinal },
-                onSelectSort = { sortOrdinal = it },
+                onSelectSort = {
+                    sortOrdinal = it
+                    sortPrefs.edit().putInt("online_playlists_sort", it).apply()
+                },
                 descending = { descending },
-                onSelectDescending = { descending = it },
+                onSelectDescending = {
+                    descending = it
+                    sortPrefs.edit().putBoolean("online_playlists_desc", it).apply()
+                },
                 leadingAction = if (canCreate && onCreate != null) {
                     SonifyMenuAction("新建歌单") {
                         createName = ""

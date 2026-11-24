@@ -36,13 +36,13 @@ object MeloXRemoteConfigDefaults {
      * 注意这只是默认值，远程配置仍可覆盖。
      */
     val FallbackOrder = listOf(
-        "bilibili",
-        "youtube_music",
         "netease",
         "qq_music",
         "kugou_lite",
         "qishui",
         "kuwo",
+        "youtube_music",
+        "bilibili",
         "jellyfin",
     )
     val Strategies = mapOf(

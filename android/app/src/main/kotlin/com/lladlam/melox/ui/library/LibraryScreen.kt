@@ -2454,6 +2454,7 @@ private fun MeloXPlaylistDetailScreen(
     var searchQuery by rememberSaveable(initialPlaylist.id) { mutableStateOf("") }
     var showPlaylistActions by remember(initialPlaylist.id) { mutableStateOf(false) }
     var showBatchDownload by remember(initialPlaylist.id) { mutableStateOf(false) }
+    var showLocalMatch by remember(initialPlaylist.id) { mutableStateOf(false) }
     var selectedTrackAction by rememberRetainedPageState(initialPlaylist.id) { mutableStateOf<SearchSong?>(null) }
     var showProviderRename by remember(initialPlaylist.id) { mutableStateOf(false) }
     var providerSyncTrack by remember(initialPlaylist.id) { mutableStateOf<SearchSong?>(null) }
@@ -3324,6 +3325,7 @@ private fun MeloXPlaylistDetailScreen(
                         sharePlaylistFromDetail(context, displayed, collectionSource)
                     }
                 },
+                onLocalMatch = if (songs.isNotEmpty()) ({ showLocalMatch = true }) else null,
                 playlistManagement = !isAlbum,
             )
             MeloXBatchDownloadSheet(
@@ -3335,6 +3337,12 @@ private fun MeloXPlaylistDetailScreen(
                 ),
                 visible = showBatchDownload,
                 onDismiss = { showBatchDownload = false },
+            )
+            MeloXPlaylistLocalMatchSheet(
+                playlistName = displayed.name,
+                songs = songs,
+                visible = showLocalMatch,
+                onDismiss = { showLocalMatch = false },
             )
             val actionSong = selectedTrackAction
             if (actionSong != null) {

@@ -2,6 +2,8 @@ package com.lladlam.melox.playback
 
 import android.content.Context
 import android.util.Log
+import com.lladlam.melox.core.audio.MediaStreamDurationProbe
+import com.lladlam.melox.core.audio.isUnexpectedlyShortStream
 import com.lladlam.melox.core.music.model.AudioQualityTier
 import com.lladlam.melox.core.music.model.MusicSource
 import com.lladlam.melox.core.music.model.MusicTrack
@@ -38,6 +40,7 @@ class LxUserPlaybackResolver(
     context: Context,
 ) {
     private val appContext = context.applicationContext
+    private val durationProbe = MediaStreamDurationProbe(appContext)
     private val inFlight = ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<LxUserPlaybackResult?>>()
 
     fun cacheIdentity(): String = LxUserSourceStore.list(appContext).joinToString("|") { it.id }
@@ -218,6 +221,7 @@ class LxUserPlaybackResolver(
         sourceCodes: List<String>,
     ): LxUserPlaybackResult? {
         val lxQuality = quality.toLxQuality()
+        val rejectedUrls = mutableSetOf<String>()
         for (record in LxUserSourceStore.list(appContext)) {
             val script = LxUserSourceStore.script(appContext, record.id) ?: continue
             var phase = "load"
@@ -232,6 +236,7 @@ class LxUserPlaybackResolver(
                         }
                     }
                     .distinct()
+                    .asSequence()
                     .mapNotNull { (source, sourceQuality) ->
                         Log.d(TAG, "LX candidate script=${record.id} source=$source requested=$lxQuality actual=$sourceQuality")
                         val candidateSong = buildLxMusicInfo(track, source, sourceQuality)
@@ -253,7 +258,15 @@ class LxUserPlaybackResolver(
                                 else -> null
                             }?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
                             Log.d(TAG, "LX candidate result script=${record.id} source=$source quality=$sourceQuality url=${url != null}")
-                            url?.let {
+                            url?.takeUnless { it in rejectedUrls }?.let {
+                                if (source == "kw" && (track.durationMs ?: 0L) > 15_000L) {
+                                    val actualDuration = durationProbe.durationMs(it, emptyMap())
+                                    if (isUnexpectedlyShortStream(track.durationMs, actualDuration)) {
+                                        Log.w(TAG, "Rejected short LX Kuwo audio: expectedMs=${track.durationMs} actualMs=$actualDuration")
+                                        rejectedUrls += it
+                                        return@let null
+                                    }
+                                }
                                 LxUserPlaybackResult(
                                     sourceId = record.id,
                                     url = it,

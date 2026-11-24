@@ -146,17 +146,7 @@ import com.lladlam.melox.ui.meloXEdgeOverscrollHaptic
 import com.lladlam.melox.ui.settings.MeloXSwipeFullAction
 import com.lladlam.melox.ui.player.MeloXSongActionsOverlay
 import com.lladlam.melox.ui.layout.rememberMeloXWindowInfo
-import com.lladlam.melox.core.music.provider.ThirdPartyMusicSourceConsentStore
-import com.lladlam.melox.core.provider.lxuser.LxSongSearchHit
-import com.lladlam.melox.core.provider.lxuser.LxSongSearchResult
-import com.lladlam.melox.core.provider.lxuser.LxSearchStatus
-import com.lladlam.melox.core.provider.lxuser.LxScriptSearchState
-import com.lladlam.melox.core.provider.lxuser.LxUserSourceStore
-import com.lladlam.melox.core.provider.lxuser.searchInstalledLxSources
-import com.lladlam.melox.playback.isSafeLxPlaybackMatch
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -335,7 +325,6 @@ fun SearchScreen(
     var query by rememberSaveable(source.name) { mutableStateOf("") }
     var selectedPlugin by rememberSaveable(source.name, pluginSourceId) { mutableStateOf(pluginSourceId) }
     val pluginGeneration by providerRegistry.changes.collectAsState()
-    val lxSourceRevision by LxUserSourceStore.changes.collectAsState()
     // Capture the generation-dependent list outside LazyRow's skippable content lambda.
     // Otherwise a cold-start restore can leave its source chips at the initial empty list.
     val enabledPluginProviders = remember(providerRegistry, pluginGeneration) {
@@ -354,19 +343,13 @@ fun SearchScreen(
     var providerRecommendations by rememberRetainedPageState(source) { mutableStateOf<List<MusicPlaylistSummary>>(emptyList()) }
     var unifiedFailures by remember(source) { mutableStateOf<List<UnifiedMusicService.SearchFailure>>(emptyList()) }
     val linkedId = if (source == MusicSource.Netease) parseSongLink(query.trim()) else null
-    var lxSearchResult by rememberRetainedPageState(source, query, kind, unifiedSources) {
-        mutableStateOf(LxSongSearchResult())
-    }
-    var searchingLx by remember { mutableStateOf(false) }
-    var matchingLxTrack by remember { mutableStateOf(false) }
-    val installedLxScripts = remember(appContext, lxSourceRevision) { LxUserSourceStore.list(appContext) }
-    val includesLxResults = installedLxScripts.isNotEmpty()
     var showSearchSources by rememberSaveable { mutableStateOf(false) }
-    var resultSource by rememberSaveable(
-        source.name, unifiedEnabled, includesLxResults, unifiedSources.map { it.value }.sorted().joinToString(),
+    var selectedResultSource by rememberSaveable(
+        source.name, unifiedEnabled, unifiedSources.map { it.value }.sorted().joinToString(),
     ) {
         mutableStateOf<String?>(null)
     }
+    val resultSource = selectedResultSource?.takeIf { selected -> unifiedSources.any { it.value == selected } }
     var providerSearchPage by rememberRetainedPageState(source, kind, query, unifiedSources, selectedPlugin) { mutableStateOf(1) }
     var providerSearchHasMore by rememberRetainedPageState(source, kind, query) { mutableStateOf(false) }
     var media by rememberRetainedPageState(source) { mutableStateOf<List<MeloXSearchMediaItem>>(emptyList()) }
@@ -443,12 +426,10 @@ fun SearchScreen(
         }
     }
 
-    LaunchedEffect(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration, lxSourceRevision) {
-        val requestKey = listOf(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration, lxSourceRevision)
+    LaunchedEffect(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration) {
+        val requestKey = listOf(query, kind, source, unifiedEnabled, unifiedSources, searchTrigger, selectedPlugin, providerSearchPage, pluginGeneration)
         if (loadedSearch == requestKey) return@LaunchedEffect
         providerSearchHasMore = false
-        lxSearchResult = LxSongSearchResult()
-        searchingLx = false
         if (selectedPlugin != null) return@LaunchedEffect
         val keyword = query.trim()
         if (keyword.isBlank()) {
@@ -493,47 +474,35 @@ fun SearchScreen(
                 if (useUnifiedSongSearch) {
                     songs = emptyList()
                     runCatching {
-                        coroutineScope {
-                            val page = providerSearchPage
-                            val lxEnabled = ThirdPartyMusicSourceConsentStore.enabled(appContext)
-                            searchingLx = lxEnabled
-                            val lx = async {
-                                if (lxEnabled) {
-                                    searchInstalledLxSources(appContext, keyword, page, 25)
-                                } else {
-                                    LxSongSearchResult(scripts = installedLxScripts.map {
-                                        LxScriptSearchState(it.id, it.metadata.name ?: it.id, LxSearchStatus.Disabled)
-                                    })
-                                }
-                            }
-                            val catalogs = withContext(Dispatchers.IO) {
-                                unifiedService.searchSourceIds(
-                                    query = keyword,
-                                    sources = unifiedSources,
-                                    page = page,
-                                    pageSizePerProvider = 25,
-                                )
-                            }
-                            providerSongs = catalogs.interleavedTracks(currentProvider.sourceId)
-                            unifiedFailures = catalogs.failures
-                            val catalogHasMore = catalogs.pages.values.any { it.hasMore }
-                            if (providerSongs.isNotEmpty()) loading = false
-                            lxSearchResult = lx.await()
-                            providerSearchHasMore = catalogHasMore || lxSearchResult.hasMore
-                            searchingLx = false
+                        withContext(Dispatchers.IO) {
+                            unifiedService.searchSourceIds(
+                                query = keyword,
+                                sources = unifiedSources,
+                                page = providerSearchPage,
+                                pageSizePerProvider = 25,
+                            )
                         }
+                    }.onSuccess { catalogs ->
+                        providerSongs = catalogs.interleavedTracks(currentProvider.sourceId, keyword)
+                        unifiedFailures = catalogs.failures
+                        providerSearchHasMore = catalogs.pages.values.any { it.hasMore }
                     }.onFailure { failure ->
                         if (failure is kotlinx.coroutines.CancellationException) throw failure
                         providerSongs = emptyList()
                         unifiedFailures = emptyList()
-                        searchingLx = false
                         error = failure.message ?: "搜索失败"
                     }
                 } else if (source == MusicSource.Netease) {
                     providerSongs = emptyList()
                     unifiedFailures = emptyList()
-                    runCatching { songClient.ensureArtwork(songClient.searchSongs(keyword)) }
-                        .onSuccess { songs = it }
+                    runCatching {
+                        val result = songClient.searchSongPage(keyword, providerSearchPage, limit = 30)
+                        songClient.ensureArtwork(result.items, authenticated = false) to result.hasMore
+                    }
+                        .onSuccess { (items, hasMore) ->
+                            songs = items
+                            providerSearchHasMore = hasMore
+                        }
                         .onFailure { error = it.message ?: "搜索失败" }
                 } else {
                     songs = emptyList()
@@ -793,8 +762,8 @@ fun SearchScreen(
             value = query,
             onValueChange = { query = it; skipSearchDebounce = false },
             onSearch = {
-                val canRetry = error != null || unifiedFailures.isNotEmpty() || lxSearchResult.failures.isNotEmpty()
-                if (!loading && !searchingLx && (loadedSearch?.firstOrNull() != query || canRetry)) {
+                val canRetry = error != null || unifiedFailures.isNotEmpty()
+                if (!loading && (loadedSearch?.firstOrNull() != query || canRetry)) {
                     skipSearchDebounce = true
                     searchTrigger += 1
                 }
@@ -853,11 +822,8 @@ fun SearchScreen(
                         unifiedSources.sortedBy { it != currentProvider.sourceId }.forEach { id ->
                             add(id.value to (providerRegistry[id]?.displayName ?: id.displayName))
                         }
-                        installedLxScripts.forEach { script ->
-                            add("lx:${script.id}" to stringResource(R.string.search_lx_named, script.metadata.name ?: script.id))
-                        }
                     }
-                    SearchResultSourceTabs(sourceOptions, resultSource) { resultSource = it }
+                    SearchResultSourceTabs(sourceOptions, resultSource) { selectedResultSource = it }
                 }
             }
         }
@@ -906,74 +872,43 @@ fun SearchScreen(
                 kind == MeloXSearchKind.Songs && linkedId == null &&
                     (useUnifiedSongSearch || source != MusicSource.Netease) ->
                     Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        TextButton(enabled = providerSearchPage > 1, onClick = { providerSearchPage-- }) { Text("上一页") }
-                        Text("第 $providerSearchPage 页", Modifier.padding(12.dp))
-                        TextButton(enabled = providerSearchHasMore, onClick = { providerSearchPage++ }) { Text("下一页") }
+                        SongSearchPagination(providerSearchPage, providerSearchHasMore) { providerSearchPage = it }
+                        Box(Modifier.weight(1f)) {
+                            ProviderSearchSongResults(
+                                state = listState,
+                                values = visibleProviderSongs,
+                                failures = unifiedFailures.filter { resultSource == null || it.sourceId.value == resultSource },
+                                showSource = true,
+                                onPlay = { track ->
+                                    ProviderPlaybackCommands.playQueue(
+                                        context = context,
+                                        tracks = visibleProviderSongs,
+                                        selectedTrackId = track.id,
+                                        onFailure = { failure -> error = failure.message ?: "播放失败" },
+                                    )
+                                },
+                            )
+                        }
                     }
-                    Box(Modifier.weight(1f)) { ProviderSearchSongResults(
-                    state = listState,
-                    values = visibleProviderSongs,
-                    failures = unifiedFailures.filter { resultSource == null || it.sourceId.value == resultSource },
-                    showSource = true,
-                    lxResults = when {
-                        resultSource == null -> lxSearchResult
-                        resultSource?.startsWith("lx:") == true -> lxSearchResult.forScript(resultSource!!.removePrefix("lx:"))
-                        else -> LxSongSearchResult()
-                    },
-                    searchingLx = searchingLx && (resultSource == null || resultSource?.startsWith("lx:") == true),
-                    onLxHit = { hit ->
-                        if (!matchingLxTrack) {
-                            matchingLxTrack = true
-                            scope.launch {
-                                try {
-                                    val matched = withContext(Dispatchers.IO) {
-                                        val catalog = unifiedSources.filterTo(linkedSetOf()) { it.builtIn != null }
-                                        val candidates = unifiedService.searchSourceIds(
-                                            query = "${hit.title} ${hit.artist}",
-                                            sources = catalog,
-                                            pageSizePerProvider = 15,
-                                        ).interleavedTracks(currentProvider.sourceId)
-                                        candidates.firstOrNull {
-                                            isSafeLxPlaybackMatch(hit.title, hit.artist, null, it)
-                                        }
-                                    }
-                                    if (matched == null) {
-                                        android.widget.Toast.makeText(
-                                            appContext, R.string.search_lx_no_playback_match,
-                                            android.widget.Toast.LENGTH_SHORT,
-                                        ).show()
-                                    } else {
-                                        ProviderPlaybackCommands.playQueue(context, listOf(matched), matched.id)
-                                    }
-                                } finally {
-                                    matchingLxTrack = false
+                kind == MeloXSearchKind.Songs -> Column(Modifier.fillMaxSize()) {
+                    if (linkedId == null && (providerSearchPage > 1 || providerSearchHasMore)) {
+                        SongSearchPagination(providerSearchPage, providerSearchHasMore) { providerSearchPage = it }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        SearchSongResults(
+                            state = listState,
+                            values = visibleSongs,
+                            onPlay = { song -> PlaybackCommands.playQueue(context, visibleSongs, song.id) },
+                            onMore = { selectedActionSong = it },
+                            onLike = { song ->
+                                scope.launch {
+                                    runCatching { operations.setSongLiked(song.id, true) }
+                                        .onFailure { error = it.message ?: "添加到资料库失败" }
                                 }
-                            }
-                        }
-                    },
-                    onPlay = { track ->
-                        ProviderPlaybackCommands.playQueue(
-                            context = context,
-                            tracks = visibleProviderSongs,
-                            selectedTrackId = track.id,
-                            onFailure = { failure -> error = failure.message ?: "播放失败" },
+                            },
                         )
-                    },
-                ) }
+                    }
                 }
-                kind == MeloXSearchKind.Songs -> SearchSongResults(
-                    state = listState,
-                    values = visibleSongs,
-                    onPlay = { song -> PlaybackCommands.playQueue(context, visibleSongs, song.id) },
-                    onMore = { selectedActionSong = it },
-                    onLike = { song ->
-                        scope.launch {
-                            runCatching { operations.setSongLiked(song.id, true) }
-                                .onFailure { error = it.message ?: "添加到资料库失败" }
-                        }
-                    },
-                )
                 source != MusicSource.Netease && kind == MeloXSearchKind.Playlists -> ProviderSearchMediaResults(
                     state = listState,
                     values = providerPlaylists.map { ProviderSearchDestination.Playlist(it) },
@@ -1469,9 +1404,6 @@ internal fun ProviderSearchSongResults(
     values: List<MusicTrack>,
     failures: List<UnifiedMusicService.SearchFailure>,
     showSource: Boolean,
-    lxResults: LxSongSearchResult = LxSongSearchResult(),
-    searchingLx: Boolean = false,
-    onLxHit: (LxSongSearchHit) -> Unit = {},
     onPlay: (MusicTrack) -> Unit,
 ) {
     val context = LocalContext.current
@@ -1493,53 +1425,8 @@ internal fun ProviderSearchSongResults(
                 )
             }
         }
-        if (searchingLx) {
-            item {
-                Text(
-                    stringResource(R.string.search_lx_loading),
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
-            }
-        }
-        items(lxResults.scripts, key = { "state:${it.id}" }) { script ->
-            val status = when (script.status) {
-                LxSearchStatus.Results -> stringResource(R.string.search_lx_result_count, script.count)
-                LxSearchStatus.Empty -> stringResource(R.string.search_lx_empty)
-                LxSearchStatus.PlaybackOnly -> stringResource(R.string.search_lx_playback_only)
-                LxSearchStatus.Failed -> stringResource(R.string.search_lx_request_failed)
-                LxSearchStatus.Disabled -> stringResource(R.string.search_lx_disabled)
-            }
-            Text(
-                stringResource(R.string.search_lx_named, script.name) + " · " + status,
-                modifier = Modifier.padding(vertical = 8.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-            )
-        }
-        if (values.isEmpty() && lxResults.hits.isEmpty() && !searchingLx) {
+        if (values.isEmpty()) {
             item { SearchEmptyInline(stringResource(R.string.search_no_songs)) }
-        }
-        items(lxResults.hits, key = { it.key }) { hit ->
-            Row(
-                Modifier.fillMaxWidth().clickable { onLxHit(hit) }.padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AsyncImage(hit.artworkUrl, null, contentScale = ContentScale.Crop, modifier = Modifier.size(52.dp).clip(RoundedCornerShape(8.dp)))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(hit.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                    Text(
-                        listOf(stringResource(R.string.search_lx_named, hit.scriptName), hit.artist, hit.album).filter(String::isNotBlank).joinToString(" · "),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
         }
         items(values, key = { "provider:${it.id.sourceId.value}:${it.id.value}" }) { track ->
             SearchSwipeSongRow(
@@ -1621,6 +1508,15 @@ private fun ProviderSearchMediaResults(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SongSearchPagination(page: Int, hasMore: Boolean, onPage: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        TextButton(enabled = page > 1, onClick = { onPage(page - 1) }) { Text("上一页") }
+        Text("第 $page 页", Modifier.padding(12.dp))
+        TextButton(enabled = hasMore, onClick = { onPage(page + 1) }) { Text("下一页") }
     }
 }
 

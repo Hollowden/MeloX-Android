@@ -14,13 +14,13 @@ import org.junit.Test
 
 class QQMusicAnonymousSearchTest {
     @Test
-    fun desktopFailureFallsBackToAnonymousMobileAndExpandsGroupedTracks() = runBlocking {
+    fun unusableDesktopCardsFallBackToAnonymousMobileAndExpandGroupedTracks() = runBlocking {
         var requests = 0
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             requests++
             val body = if (requests == 1) {
-                """{"req_0":{"code":2001}}"""
+                """{"req_0":{"code":0,"data":{"body":{"song":{"list":[{"name":"missing song ID"}]}}}}}"""
             } else {
                 assertEquals("u6.y.qq.com", request.url.host)
                 assertNull(request.header("Cookie"))
@@ -34,6 +34,7 @@ class QQMusicAnonymousSearchTest {
                 val primary = song("primary", "非常简单").put("grp", JSONArray().put(grouped))
                 JSONObject().put("code", 0).put(key, JSONObject().put("code", 0)
                     .put("data", JSONObject().put("body", JSONObject()
+                        .put("song", JSONObject().put("list", JSONArray()))
                         .put("item_song", JSONArray().put(primary))))).toString()
             }
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")

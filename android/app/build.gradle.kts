@@ -164,7 +164,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.holden.melox.personal"
+        applicationId = "com.hollowden.melox.personal"
         minSdk = 24
         targetSdk = 37
         versionCode = 30

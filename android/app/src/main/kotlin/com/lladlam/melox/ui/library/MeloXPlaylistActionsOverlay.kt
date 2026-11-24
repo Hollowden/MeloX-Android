@@ -76,6 +76,7 @@ internal fun MeloXPlaylistActionsOverlay(
     canDownload: Boolean = true,
     onEdit: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
+    onLocalMatch: (() -> Unit)? = null,
     playlistManagement: Boolean = true,
 ) {
     val context = LocalContext.current
@@ -122,6 +123,9 @@ internal fun MeloXPlaylistActionsOverlay(
                     onDismiss()
                 }
                 if (canDownload) PlaylistActionRow(stringResource(R.string.playlist_batch_download), MeloXSymbol.Download, true) { onDismiss(); onBatchDownload() }
+                onLocalMatch?.let { localMatch ->
+                    PlaylistActionRow("匹配本地歌曲", MeloXSymbol.Storage, true) { onDismiss(); localMatch() }
+                }
                 if (!providerCollection && playlistManagement) PlaylistActionRow(stringResource(R.string.playlist_analyze), MeloXSymbol.Refresh, true) { onDismiss(); onAnalyzePlaylist() }
                 onEdit?.let { edit ->
                     PlaylistActionRow(stringResource(R.string.playlist_actions), MeloXSymbol.Ellipsis, true) { onDismiss(); edit() }
