@@ -218,7 +218,7 @@ enum class SettingsRoute(private val fallbackTitle: String, private val titleRes
     TabLayout("页面与标签栏", R.string.settings_route_tabs),
     General("通用", R.string.settings_route_general),
     RemoteConfig("远程兼容性配置", R.string.settings_route_remote_config),
-    About("关于 MeloX", R.string.settings_route_about),
+    About("关于弥乐", R.string.settings_route_about),
     Legal("隐私政策与免责声明", R.string.settings_route_legal),
     Privacy("隐私与本地算法", R.string.settings_route_privacy),
     Developer("开发者选项", R.string.settings_route_developer),
@@ -263,9 +263,7 @@ private val SettingsSections = listOf(
         SettingsItem(SettingsRoute.DailyHistory, "自动归档每天查看的每日推荐，可按日期回看", "◷", "历史 日推 每日推荐 归档 日历 回看 记录 history daily archive calendar"),
     )),
     SettingsSection("关于", listOf(
-        SettingsItem(SettingsRoute.RemoteConfig, "签名配置状态、平台熔断声明与本地缓存", "⌁", "远程 配置 云控 签名 熔断 兼容 GitHub"),
-        SettingsItem(SettingsRoute.About, "版本、项目主页与开源信息", "ⓘ", "GitHub 更新 开源 许可"),
-        SettingsItem(SettingsRoute.Legal, "查看隐私政策、免责声明与同意版本", "▤", "隐私 政策 免责声明 法律 条款 数据"),
+        SettingsItem(SettingsRoute.About, "版本信息、个人仓库与日志工具", "ⓘ", "版本 GitHub 日志 个人版"),
         SettingsItem(SettingsRoute.Developer, "播放器诊断与迁移状态", "⌘", "BeatNet 节拍 调试 日志"),
         SettingsItem(SettingsRoute.Experimental, "预览尚未稳定的新功能", "✦", "实验 测试 歌词 强绑定"),
     )),
@@ -3877,26 +3875,13 @@ private fun formatRemoteConfigTime(value: Long): String = if (value <= 0L) {
 
 @Composable
 private fun AboutSettings(context: android.content.Context) {
-    val githubRouting = remember { MeloXGitHubRouting(context) }
-    val updateClient = remember { MeloXUpdateClient(context, routing = githubRouting) }
-    val remoteConfigStatus by MeloXRemoteConfigRuntime.status.collectAsState()
-    val forceSecurityUpdates = remoteConfigStatus.source == MeloXRemoteConfigSource.VerifiedRemote &&
-        MeloXRemoteConfigConsent.enabled(context) &&
-        remoteConfigStatus.config.securityUpdate.enabled
     val scope = rememberCoroutineScope()
-    var checking by remember { mutableStateOf(false) }
     var exportingLogs by remember { mutableStateOf(false) }
     var showLogExportInfo by remember { mutableStateOf(false) }
-    var release by remember { mutableStateOf<MeloXRelease?>(null) }
-    var updateStatus by remember { mutableStateOf<String?>(null) }
-    var versionTapCount by remember { mutableIntStateOf(0) }
-    var lastVersionTapAt by remember { mutableStateOf(0L) }
-    var showCatEgg by remember { mutableStateOf(false) }
-    var showReleaseNotes by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     var showLogViewer by remember { mutableStateOf(false) }
     var logViewerLoading by remember { mutableStateOf(false) }
     var logViewerText by remember { mutableStateOf<String?>(null) }
-    var downloadSource by remember { mutableStateOf(githubRouting.selectedSource()) }
     val exportLogsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
     ) { uri ->
@@ -3907,308 +3892,49 @@ private fun AboutSettings(context: android.content.Context) {
                 runCatching {
                     MeloXLogExporter.exportRecentLogs(context, uri)
                 }.onSuccess { result ->
-                    updateStatus = "已导出 MeloX 当前进程日志（${result.lineCount} 行）"
+                    statusMessage = "已导出当前进程日志（${result.lineCount} 行）"
                 }.onFailure { error ->
-                    updateStatus = error.message ?: "日志导出失败"
+                    statusMessage = error.message ?: "日志导出失败"
                 }
                 exportingLogs = false
             }
         }
     }
-    Box(
-        modifier = Modifier.pointerInput(Unit) {
-            var distance = 0f
-            detectVerticalDragGestures(
-                onDragStart = { distance = 0f },
-                onVerticalDrag = { _, dragAmount ->
-                    distance += dragAmount
-                    if (distance > 180f) {
-                        showCatEgg = true
-                        distance = 0f
-                    }
+    val currentCommit = BuildConfig.GIT_SHA.take(7)
+    SettingsGlassGroup {
+        Column(Modifier.padding(18.dp)) {
+            Text("弥乐 · 个人版", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(
+                buildString {
+                    append("版本 ${BuildConfig.VERSION_NAME}")
+                    if (currentCommit.isNotBlank()) append(" · $currentCommit")
                 },
-            )
-        },
-    ) {
-        SettingsGlassGroup {
-            Column(Modifier.padding(18.dp)) {
-            Text("MeloX Android", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text(
-                "版本 ${BuildConfig.VERSION_NAME} · MeloX 的 Android 原生迁移版。",
-                modifier = Modifier
-                    .padding(top = 7.dp)
-                    .clickable {
-                        val now = System.currentTimeMillis()
-                        versionTapCount = if (now - lastVersionTapAt < 2_000L) versionTapCount + 1 else 1
-                        lastVersionTapAt = now
-                        if (versionTapCount >= 7) {
-                            showCatEgg = true
-                            versionTapCount = 0
-                        }
-                    },
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha=.62f),
-            )
-            Text(hotText("about.maintainer", stringResource(R.string.settings_about_maintainer)), modifier = Modifier.padding(top=14.dp), fontWeight=FontWeight.SemiBold)
-            Text(hotText("about.upstream", stringResource(R.string.settings_about_upstream)), modifier = Modifier.padding(top=5.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha=.58f))
-            Text(
-                "Sonify",
-                modifier = Modifier.padding(top = 14.dp),
-                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 7.dp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
             )
             Text(
-                "首页、音乐库、歌手页及部分界面组件来自 Sonify 开源项目（GPL-3.0）：https://github.com/XiaoZhi0729/Sonify",
-                modifier = Modifier.padding(top = 5.dp),
+                "Hollowden 个人定制维护分支（独立包名 · 零赞助 · 硬件音频直通 · 多源检索与本地绑定）。",
+                modifier = Modifier.padding(top = 10.dp),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
                 fontSize = 13.sp,
                 lineHeight = 19.sp,
             )
-            }
         }
     }
-    if (showCatEgg) {
-        MeloXGlassDialog(visible = true, onDismiss = { showCatEgg = false }) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                MeloXPinkCat()
-                Text(hotText("about.cat_title", stringResource(R.string.settings_about_cat_title)), style = MaterialTheme.typography.titleLarge)
-                Text(hotText("about.cat_body", stringResource(R.string.settings_about_cat_body)), modifier = Modifier.padding(top = 7.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
-                MeloXGlassButton(
-                    onClick = { showCatEgg = false },
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                    style = MeloXGlassButtonStyle.BorderedProminent,
-                ) { Text(stringResource(R.string.settings_about_cat_accept)) }
-            }
-        }
+    statusMessage?.let { message ->
+        Spacer(Modifier.height(10.dp))
+        Text(message, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .64f))
     }
     Spacer(Modifier.height(14.dp))
-    SettingsToggleRow(context, stringResource(R.string.settings_about_auto_update), "update_auto_check", true, stringResource(R.string.settings_about_auto_update_note))
-    Spacer(Modifier.height(10.dp))
-    MeloXSettingsDropdown(
-        title = stringResource(R.string.settings_about_github_source),
-        selected = downloadSource,
-        items = listOf(
-            MeloXGitHubSource.Auto to stringResource(R.string.settings_about_source_auto),
-            MeloXGitHubSource.GitHubDoh to stringResource(R.string.settings_about_source_doh),
-            MeloXGitHubSource.GhFast to stringResource(R.string.settings_about_source_ghfast),
-            MeloXGitHubSource.GhProxy to stringResource(R.string.settings_about_source_ghproxy),
-            MeloXGitHubSource.GhProxyOrg to stringResource(R.string.settings_about_source_ghproxy_org),
-        ),
-        onSelected = {
-            downloadSource = it
-            githubRouting.selectSource(it)
-        },
-    )
-    Text(
-        githubRouting.effectiveRoute()?.takeIf { downloadSource == MeloXGitHubSource.Auto }?.let {
-            "自动测速当前选择 ${it.source.label}（${it.latencyMs}ms）；更新检查、APK 下载与已授权的签名配置共用此源。"
-        } ?: stringResource(R.string.settings_about_source_auto_note),
-        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
-        fontSize = 12.sp,
-        lineHeight = 17.sp,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
-    )
-    SettingsActionButton(if (checking) stringResource(R.string.settings_about_checking) else stringResource(R.string.settings_about_check_update)) {
-        if (!checking) scope.launch {
-            checking = true
-            runCatching { updateClient.latestStableRelease(forceSourceBenchmark = true) }
-                .onSuccess {
-                    if (updateClient.isNewer(it.version, BuildConfig.VERSION_NAME) &&
-                        forceSecurityUpdates && it.securityCritical
-                    ) {
-                        release = null
-                        MeloXForcedUpdate.require(it)
-                        updateStatus = "发现安全更新 ${it.version}，必须安装完整 APK"
-                    } else {
-                        release = it
-                        updateStatus = if (updateClient.isNewer(it.version, BuildConfig.VERSION_NAME)) {
-                            "发现新版本 ${it.version}：${it.name}"
-                        } else {
-                            "当前已是最新版本（${BuildConfig.VERSION_NAME}）"
-                        }
-                    }
-                }
-                .onFailure { updateStatus = it.message ?: "更新检查失败" }
-            checking = false
-        }
+    SettingsActionButton("打开个人仓库（Hollowden/MeloX-Android）") {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Hollowden/MeloX-Android")))
+        }.onFailure { statusMessage = it.message ?: "无法打开链接" }
     }
-    val currentCommit = BuildConfig.GIT_SHA.take(7)
-    if (currentCommit.isNotBlank()) {
-        Spacer(Modifier.height(10.dp))
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = "当前构建 commit $currentCommit（开发版）",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .42f),
-        )
-    }
-    var devCommit by remember { mutableStateOf<MeloXDevCommit?>(null) }
-    SettingsActionButton(stringResource(R.string.settings_about_check_dev)) {
-        if (!checking) scope.launch {
-            checking = true
-            runCatching { updateClient.latestDevCommit() }
-                .onSuccess { latest ->
-                    devCommit = latest
-                    updateStatus = if (latest.sha == BuildConfig.GIT_SHA) {
-                        "已经是最新提交 ${latest.sha.take(7)}"
-                    } else {
-                        "main 有新提交 ${latest.sha.take(7)}：${latest.message}"
-                    }
-                }
-                .onFailure { updateStatus = it.message ?: "检查最新提交失败" }
-            checking = false
-        }
-    }
-    devCommit?.takeIf { it.sha != BuildConfig.GIT_SHA }?.let { latest ->
-        Spacer(Modifier.height(10.dp))
-        SettingsActionButton(stringResource(R.string.settings_about_download_dev)) {
-            scope.launch {
-                val target = runCatching { updateClient.devBuildUrl() }.getOrNull()
-                    ?: "https://github.com/lladlam/MeloX-Android/actions/workflows/build.yml"
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-                    .onFailure { updateStatus = it.message ?: "无法打开下载页" }
-            }
-        }
-        Text(
-            text = "新提交 ${latest.sha.take(7)}（${latest.author}）：${latest.message}",
-            modifier = Modifier.padding(top = 8.dp),
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f),
-        )
-    }
-    updateStatus?.let { message ->
-        Spacer(Modifier.height(10.dp))
-        Text(message, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
-    }
-    release?.takeIf { updateClient.isNewer(it.version, BuildConfig.VERSION_NAME) }?.let { available ->
-        Spacer(Modifier.height(10.dp))
-        var deltaPatch by remember(available.version, forceSecurityUpdates) {
-            mutableStateOf<com.lladlam.melox.core.remoteconfig.MeloXRemoteUpdatePatch?>(null)
-        }
-        LaunchedEffect(available.version, forceSecurityUpdates) {
-            if (forceSecurityUpdates && available.securityCritical) {
-                deltaPatch = null
-                return@LaunchedEffect
-            }
-            deltaPatch = withContext(Dispatchers.IO) {
-                val patch = com.lladlam.melox.core.remoteconfig.MeloXRemoteConfigRuntime.status.value
-                    .config.updatePatches.firstOrNull { it.toVersion == available.version }
-                    ?: return@withContext null
-                val installed = com.lladlam.melox.core.update.MeloXApkDelta.installedApkSha256(context)
-                    ?: return@withContext null
-                patch.takeIf { it.fromApkSha256.equals(installed, ignoreCase = true) }
-            }
-        }
-        deltaPatch?.let { patch ->
-            SettingsActionButton(
-                "增量更新 ${available.version}（约 %.0f MB）".format(patch.patchBytes / 1024.0 / 1024.0),
-            ) {
-                scope.launch {
-                    updateStatus = "正在下载增量补丁…"
-                    val patchFile = updateClient.downloadPatch(context, patch)
-                    if (patchFile == null) {
-                        updateStatus = "增量补丁下载失败，可用整包下载"
-                        return@launch
-                    }
-                    updateStatus = "正在重建安装包…"
-                    val apk = withContext(Dispatchers.IO) {
-                        com.lladlam.melox.core.update.MeloXApkDelta.reconstruct(
-                            context = context,
-                            patch = patchFile,
-                            expectedApkSha256 = patch.apkSha256,
-                            versionName = available.version,
-                        )
-                    }
-                    if (apk == null) {
-                        updateStatus = "增量重建校验失败，请用整包下载"
-                        return@launch
-                    }
-                    updateStatus = if (com.lladlam.melox.core.update.MeloXApkDelta.launchInstaller(context, apk)) {
-                        "已打开系统安装器"
-                    } else {
-                        "无法打开安装器，请用整包下载"
-                    }
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-        }
-        SettingsActionButton(if (available.apkUrl != null) "下载 ${available.version} APK" else "打开 ${available.version} 发布页") {
-            scope.launch {
-                val target = runCatching { updateClient.downloadUrl(available) }.getOrNull() ?: available.pageUrl
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target))) }
-                    .onFailure { updateStatus = it.message ?: "无法打开下载链接" }
-            }
-        }
-        if (available.notes.isNotBlank()) {
-            Text(available.notes.take(700), modifier = Modifier.padding(top = 10.dp), fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
-        }
-    }
-    Spacer(Modifier.height(14.dp))
     Spacer(Modifier.height(10.dp))
     SettingsActionButton(stringResource(R.string.settings_about_restore_player)) {
         MeloXSettingsPreferences.resetRecommendedPlayerSettings(context)
-        updateStatus = "已恢复推荐播放器、歌词与 AutoMix 配置"
-    }
-    Spacer(Modifier.height(14.dp))
-    SettingsGlassGroup {
-        Column(Modifier.padding(16.dp)) {
-            Text(stringResource(R.string.settings_about_licenses_title), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                "MeloX 主体：GNU GPLv3\n" +
-                    "qier222/YesPlayMusic：网易云接口与播放器实现参考（MIT）\n" +
-                    "jayfunc/BetterLyrics：逐字歌词渲染、光效与动效参考\n" +
-                    "WXRIW/Lyricify-Lyrics-Helper：QQ 匿名搜索与歌词协议、纯音乐占位识别、网易云 YRC、Lyricify Lines / Syllable 格式参考（Apache-2.0）\n" +
-                    "https://github.com/WXRIW/Lyricify-Lyrics-Helper\n" +
-                    "megadonkatsu/YTRear：实验性独立背屏应用 MeloX Rear 的源码来源，上游未声明许可证\n" +
-                    "https://github.com/megadonkatsu/YTRear\n" +
-                    "neteasecloudmusicapienhanced/api-enhanced：听歌识曲与音频指纹运行时\n" +
-                    "DanteAlighieri13210914/pv-tool：文字 PV 原始实现（Non-Commercial License）\n" +
-                     "mjhydri/BeatNet：自动混音节拍/重拍/速度分析（CC BY 4.0）\n" +
-                     "NEORUAA/MeiloX：基于 Mei 的仿 Apple Music 网易云音乐客户端，提供 UI 参考\n" +
-                     "lladlam/Square：Spotify 与 YouTube Music 双后端架构参考\n" +
-                     "YouTube Music：基于 Square 架构，使用 vendored Metrolist InnerTube（GPL-3.0）与 NewPipeExtractor\n" +
-                     "Spotify：参考 Square Spotify backend，使用 librespot-java（Apache-2.0）\n" +
-                     "MakcRe/KuGouMusicApi：酷狗概念版协议、签名与每日 VIP 领取／升级接口参考（MIT）\n" +
-                     "guowenye/qishui-api：汽水音乐接口、扫码登录、目录、歌词与播放字段参考（MIT）\n" +
-                     "MoeKoeMusic/MoeKoeMusic：概念版桌面账号与签到流程参考（GPL-2.0）\n" +
-                     "MoeKoeMusic/MoeKoeMusic-mobile：移动端签到流程与结果处理参考（GPL-2.0）；MoeKoe 项目仅作行为参考，未复制代码或界面资源\n" +
-                     "lladlam/MeloX-AutoSync：本地逐字歌词对齐与发音映射参考\n" +
-                     "Microsoft ONNX Runtime：本地歌词对齐推理（MIT）\n" +
-                     "AndroidX / Jetpack Compose / Media3：界面、生命周期与播放基础（Apache-2.0）\n" +
-                     "Jellyfin androidx-media：预编译 Media3 FFmpeg 音频解码器，受影响 Android 8.1 设备的 FLAC 软件解码回退（GPL-3.0）\n" +
-                     "Coil / OkHttp / kotlinx.coroutines：封面加载、网络与协程（Apache-2.0）\n" +
-                     "HarlonWang/quickjs-wrapper：LX Music 兼容音源脚本隔离运行时（各组件保留原许可证）\n" +
-                     "ZXing：二维码生成（Apache-2.0）\n" +
-                     "Shizuku：可选的免 Root HyperOS 兼容接入（Apache-2.0）\n" +
-                     "vivo OriginOS：自动尝试原子岛通知适配，不提供单独开关\n" +
-                     "thlucas1/SpotifyWebApiPython：Spotify Web API 客户端，提供 Spotify API 参考\n" +
-                    "bromothymolb/bilibili-api-zoku：Bilibili API 调用整合项目，提供 Bilibili API 参考\n" +
-                    "Kyant0 AndroidLiquidGlass / Backdrop：Android 液态玻璃渲染基础",
-                modifier = Modifier.padding(top = 10.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
-            )
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_release_notes)) {
-        showReleaseNotes = true
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_github)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/lladlam/MeloX-Android"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_ios)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_upstream_licenses)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/youshen2/MeloX/blob/main/MeloX/Features/Legal/ProjectLicensesView.swift"))) }
-    }
-    Spacer(Modifier.height(10.dp))
-    SettingsActionButton(stringResource(R.string.settings_about_qq_group)) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/wbhFQxj7mo"))) }
+        statusMessage = "已恢复推荐播放器、歌词与 AutoMix 配置"
     }
     Spacer(Modifier.height(10.dp))
     SettingsActionButton(stringResource(R.string.settings_about_view_logs)) {
@@ -4271,37 +3997,6 @@ private fun AboutSettings(context: android.content.Context) {
                     exportingLogs = true
                     exportLogsLauncher.launch("MeloX-logs-${System.currentTimeMillis()}.txt")
                 }
-            }
-        }
-    }
-    if (showReleaseNotes) {
-        val notes = remember { MeloXReleaseNotesCatalog.current() }
-        MeloXGlassDialog(visible = true, onDismiss = { showReleaseNotes = false }) {
-            Text(stringResource(R.string.settings_release_notes_title), style = MaterialTheme.typography.titleLarge)
-            Text(
-                stringResource(R.string.settings_release_notes_version, notes.version),
-                modifier = Modifier.padding(top = 6.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
-                fontSize = 13.sp,
-            )
-            Column(
-                Modifier
-                    .padding(top = 12.dp)
-                    .height(320.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                notes.entries.forEach { entry ->
-                    Text(
-                        "• $entry",
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .78f),
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp,
-                    )
-                }
-            }
-            SettingsActionButton(stringResource(R.string.action_done), Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                showReleaseNotes = false
             }
         }
     }

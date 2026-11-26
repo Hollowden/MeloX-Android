@@ -915,7 +915,7 @@
     <string name="settings_route_tabs">页面与标签栏</string>
     <string name="settings_route_general">通用</string>
     <string name="settings_route_remote_config">远程兼容性配置</string>
-    <string name="settings_route_about">关于 MeloX</string>
+    <string name="settings_route_about">关于弥乐</string>
     <string name="settings_route_legal">隐私政策与免责声明</string>
     <string name="settings_route_privacy">隐私与本地算法</string>
     <string name="settings_route_developer">开发者选项</string>

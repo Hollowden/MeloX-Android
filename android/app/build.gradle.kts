@@ -167,8 +167,8 @@ android {
         applicationId = "com.hollowden.melox.personal"
         minSdk = 24
         targetSdk = 37
-        versionCode = 30
-        versionName = "0.7.5"
+        versionCode = 31
+        versionName = "0.7.5-hollowden.2"
         testInstrumentationRunner = providers.gradleProperty("meloxTestInstrumentationRunner")
             .getOrElse("com.lladlam.melox.core.autosync.AutoSyncDeviceRunner")
         externalNativeBuild {
